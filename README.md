@@ -254,7 +254,7 @@ const result = await Result.tryPromise(() => fetch(url), {
 });
 ```
 
-The try callback receives a `TryContext` with a 1-based `attempt` number:
+The async try callback receives a `TryPromiseContext` with a 1-based `attempt` number and the optional top-level abort signal. The synchronous `Result.try` callback continues to receive a `TryContext` containing only `attempt`.
 
 ```ts
 const result = await Result.tryPromise(({ attempt }) => fetchWithRetryContext(url, attempt), {
@@ -265,6 +265,25 @@ const result = await Result.tryPromise(({ attempt }) => fetchWithRetryContext(ur
   },
 });
 ```
+
+Pass an abort signal in the top-level config to interrupt a pending retry delay and prevent later retries. The signal is also forwarded to every attempt so the try callback can cancel abort-aware operations:
+
+```ts
+const controller = new AbortController();
+
+const result = await Result.tryPromise(({ signal }) => fetch(url, { signal }), {
+  signal: controller.signal,
+  retry: {
+    times: 3,
+    delayMs: 100,
+    backoff: "constant",
+  },
+});
+```
+
+The same signal and failed attempt number are available as the second `shouldRetry` argument for custom retry decisions: `shouldRetry: (error, { attempt, signal }) => boolean`.
+
+`Result.tryPromise` cannot abort an operation by itself. The try callback must pass the signal to operations such as `fetch` that support cancellation. When aborted, retry scheduling stops and the latest typed result is returned.
 
 ### Conditional Retry
 

@@ -19,8 +19,16 @@ export { Err, Ok } from "./core";
 export type { InferErr, InferOk } from "./core";
 export type Result<T, E> = import("./core").Result<T, E>;
 
+/** Context passed to each `Result.try` attempt. */
 export type TryContext = {
+  /** One-based execution count, including the initial attempt. */
   readonly attempt: number;
+};
+
+/** Context passed to each `Result.tryPromise` attempt and retry decision. */
+export type TryPromiseContext = TryContext & {
+  /** Abort signal supplied through the top-level `Result.tryPromise` config. */
+  readonly signal?: AbortSignal;
 };
 
 /** Executes fn, panics if it throws. */
@@ -89,34 +97,41 @@ const tryFn: {
 };
 
 type RetryConfig<E = unknown> = {
+  /** Abort signal forwarded unchanged to every try and retry-decision context. */
+  signal?: AbortSignal;
   retry?: {
     times: number;
     delayMs: number;
     backoff: "linear" | "constant" | "exponential";
     /** Predicate to determine if an error should trigger a retry. Defaults to always retry. */
-    shouldRetry?: (error: E) => boolean;
+    shouldRetry?: (error: E, context: TryPromiseContext) => boolean;
   };
 };
 
 const tryPromise: {
   <A, E>(
     options: {
-      try: (context: TryContext) => Promise<A>;
+      try: (context: TryPromiseContext) => Promise<A>;
       catch: (cause: unknown) => E | Promise<E>;
     },
     config?: RetryConfig<E>,
   ): Promise<Result<A, E>>;
   <A>(
-    thunk: (context: TryContext) => Promise<A>,
+    thunk: (context: TryPromiseContext) => Promise<A>,
     config?: RetryConfig<UnhandledException>,
   ): Promise<Result<A, UnhandledException>>;
 } = async <A, E>(
   options:
-    | ((context: TryContext) => Promise<A>)
-    | { try: (context: TryContext) => Promise<A>; catch: (cause: unknown) => E | Promise<E> },
+    | ((context: TryPromiseContext) => Promise<A>)
+    | {
+        try: (context: TryPromiseContext) => Promise<A>;
+        catch: (cause: unknown) => E | Promise<E>;
+      },
   config?: RetryConfig<E | UnhandledException>,
 ): Promise<Result<A, E | UnhandledException>> => {
-  const execute = async (context: TryContext): Promise<Result<A, E | UnhandledException>> => {
+  const execute = async (
+    context: TryPromiseContext,
+  ): Promise<Result<A, E | UnhandledException>> => {
     if (typeof options === "function") {
       try {
         return ok(await options(context));
@@ -139,7 +154,7 @@ const tryPromise: {
   const retry = config?.retry;
 
   if (!retry) {
-    return execute({ attempt: 1 });
+    return execute({ attempt: 1, signal: config?.signal });
   }
 
   const getDelay = (retryAttempt: number): number => {
@@ -153,21 +168,42 @@ const tryPromise: {
     }
   };
 
-  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const sleepForRetryDelay = (ms: number, signal?: AbortSignal): Promise<boolean> =>
+    new Promise((resolve) => {
+      if (signal?.aborted) {
+        resolve(false);
+        return;
+      }
 
-  let attempt = 1;
-  let result = await execute({ attempt });
+      const onAbort = () => {
+        clearTimeout(timeout);
+        resolve(false);
+      };
+      const timeout = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(true);
+      }, ms);
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+
+  let context: TryPromiseContext = { attempt: 1, signal: config.signal };
+  let result = await execute(context);
 
   const shouldRetryFn = retry.shouldRetry ?? (() => true);
 
   for (let retryAttempt = 0; retryAttempt < retry.times; retryAttempt++) {
-    if (result.status !== "error") break;
+    if (result.status !== "error" || context.signal?.aborted) break;
     const error = result.error;
-    const shouldContinue = tryOrPanic(() => shouldRetryFn(error), "shouldRetry predicate threw");
+    const shouldContinue = tryOrPanic(
+      () => shouldRetryFn(error, context),
+      "shouldRetry predicate threw",
+    );
     if (!shouldContinue) break;
-    await sleep(getDelay(retryAttempt));
-    attempt++;
-    result = await execute({ attempt });
+    const delayCompleted = await sleepForRetryDelay(getDelay(retryAttempt), context.signal);
+    if (!delayCompleted || context.signal?.aborted) break;
+    context = { attempt: context.attempt + 1, signal: config.signal };
+    result = await execute(context);
   }
 
   return result;
@@ -553,8 +589,9 @@ export const Result = {
    * Executes async function, wraps result/error in Result with retry support.
    *
    * @example
-   * // Basic retry
-   * await Result.tryPromise(() => fetch(url), {
+   * // Basic retry with cancellation forwarded to each attempt and retry delay
+   * await Result.tryPromise(({ signal }) => fetch(url, { signal }), {
+   *   signal: abortController.signal,
    *   retry: { times: 3, delayMs: 100, backoff: "exponential" }
    * })
    *
