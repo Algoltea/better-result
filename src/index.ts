@@ -2,9 +2,17 @@ export { Result, Ok, Err } from "./result";
 export type {
   InferOk,
   InferErr,
+  ResultCodec,
+  ResultCodecConfig,
   SerializedResult,
   SerializedOk,
   SerializedErr,
+  StandardSchemaInput,
+  StandardSchemaIssue,
+  StandardSchemaOutput,
+  StandardSchemaPathSegment,
+  StandardSchemaResult,
+  StandardSchemaV1,
   TryContext,
   TryPromiseContext,
 } from "./result";
@@ -15,8 +23,14 @@ export {
   TaggedError,
   UnhandledException,
   ResultDeserializationError,
+  ResultSerializationError,
   matchError,
   matchErrorPartial,
   isTaggedError,
 } from "./error";
-export type { AnyTaggedError, TaggedErrorInstance, TaggedErrorClass } from "./error";
+export type {
+  AnyTaggedError,
+  ResultCodecIssue,
+  TaggedErrorInstance,
+  TaggedErrorClass,
+} from "./error";

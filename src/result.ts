@@ -1,5 +1,6 @@
 import { dual } from "./dual";
-import { ResultDeserializationError, UnhandledException } from "./error";
+import { ResultDeserializationError, ResultSerializationError, UnhandledException } from "./error";
+import { type StandardSchemaV1 } from "./standard-schema";
 import {
   Err,
   Ok,
@@ -17,7 +18,14 @@ import {
 
 export { Err, Ok } from "./core";
 export type { InferErr, InferOk } from "./core";
+export type { StandardSchemaV1 } from "./standard-schema";
 export type Result<T, E> = import("./core").Result<T, E>;
+/** A validation issue reported by a Standard Schema-compatible schema. */
+export type StandardSchemaIssue = StandardSchemaV1.Issue;
+/** A property key wrapper used in Standard Schema validation paths. */
+export type StandardSchemaPathSegment = StandardSchemaV1.PathSegment;
+/** The success or issue result returned by a Standard Schema-compatible validator. */
+export type StandardSchemaResult<Output> = StandardSchemaV1.Result<Output>;
 
 /** Context passed to each `Result.try` attempt. */
 export type TryContext = {
@@ -481,35 +489,332 @@ export interface SerializedErr<E> {
 /** Shape of a serialized Result over RPC. */
 export type SerializedResult<T, E> = SerializedOk<T> | SerializedErr<E>;
 
-function isSerializedResult(obj: unknown): obj is SerializedResult<unknown, unknown> {
+type SerializedOkEnvelope = {
+  readonly status: "ok";
+  readonly value?: unknown;
+};
+
+type SerializedErrEnvelope = {
+  readonly status: "error";
+  readonly error?: unknown;
+};
+
+type SerializedResultEnvelope = SerializedOkEnvelope | SerializedErrEnvelope;
+
+/** Infers the input accepted by a Standard Schema-compatible schema. */
+export type StandardSchemaInput<TSchema extends StandardSchemaV1> =
+  StandardSchemaV1.InferInput<TSchema>;
+
+/** Infers the output produced by a Standard Schema-compatible schema. */
+export type StandardSchemaOutput<TSchema extends StandardSchemaV1> =
+  StandardSchemaV1.InferOutput<TSchema>;
+
+type StandardSchemaValidationResult<TSchema extends StandardSchemaV1> = ReturnType<
+  TSchema["~standard"]["validate"]
+>;
+
+type StandardSchemaAsyncValidation<TSchema extends StandardSchemaV1> = Extract<
+  StandardSchemaValidationResult<TSchema>,
+  PromiseLike<unknown>
+>;
+
+type StandardSchemaSyncValidation<TSchema extends StandardSchemaV1> = Exclude<
+  StandardSchemaValidationResult<TSchema>,
+  PromiseLike<unknown>
+>;
+
+type StandardSchemaOperationResult<T, TSchema extends StandardSchemaV1> = [
+  StandardSchemaAsyncValidation<TSchema>,
+] extends [never]
+  ? T
+  : [StandardSchemaSyncValidation<TSchema>] extends [never]
+    ? Promise<T>
+    : T | Promise<T>;
+
+type SerializedCodecResult<
+  TOkSerialize extends StandardSchemaV1,
+  TErrSerialize extends StandardSchemaV1,
+> = Result<
+  SerializedResult<StandardSchemaOutput<TOkSerialize>, StandardSchemaOutput<TErrSerialize>>,
+  ResultSerializationError
+>;
+
+type SerializedCodecOperationResult<
+  TResult extends Result<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>,
+  TOkSerialize extends StandardSchemaV1,
+  TErrSerialize extends StandardSchemaV1,
+> =
+  TResult extends Ok<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>
+    ? StandardSchemaOperationResult<
+        SerializedCodecResult<TOkSerialize, TErrSerialize>,
+        TOkSerialize
+      >
+    : TResult extends Err<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>
+      ? StandardSchemaOperationResult<
+          SerializedCodecResult<TOkSerialize, TErrSerialize>,
+          TErrSerialize
+        >
+      : never;
+
+type DeserializedCodecResult<
+  TOkDeserialize extends StandardSchemaV1,
+  TErrDeserialize extends StandardSchemaV1,
+> = Result<
+  StandardSchemaOutput<TOkDeserialize>,
+  StandardSchemaOutput<TErrDeserialize> | ResultDeserializationError
+>;
+
+type UnknownDeserializationResult<
+  TOkDeserialize extends StandardSchemaV1,
+  TErrDeserialize extends StandardSchemaV1,
+> =
+  | DeserializedCodecResult<TOkDeserialize, TErrDeserialize>
+  | StandardSchemaOperationResult<
+      DeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+      TOkDeserialize
+    >
+  | StandardSchemaOperationResult<
+      DeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+      TErrDeserialize
+    >;
+
+/** Standard Schema serializers and deserializers for both Result branches. */
+export interface ResultCodecConfig<
+  TOkSerialize extends StandardSchemaV1,
+  TErrSerialize extends StandardSchemaV1,
+  TOkDeserialize extends StandardSchemaV1,
+  TErrDeserialize extends StandardSchemaV1,
+> {
+  /** Schemas that convert in-memory Result payloads into wire payloads. */
+  readonly serialize: {
+    /** Serializes an Ok value. */
+    readonly ok: TOkSerialize;
+    /** Serializes an Err value. */
+    readonly err: TErrSerialize;
+  };
+  /** Schemas that parse wire payloads back into in-memory Result payloads. */
+  readonly deserialize: {
+    /** Deserializes a serialized Ok value. */
+    readonly ok: TOkDeserialize;
+    /** Deserializes a serialized Err value. */
+    readonly err: TErrDeserialize;
+  };
+}
+
+/** Converts Result values to and from a validated serialized representation. */
+export interface ResultCodec<
+  TOkSerialize extends StandardSchemaV1,
+  TErrSerialize extends StandardSchemaV1,
+  TOkDeserialize extends StandardSchemaV1,
+  TErrDeserialize extends StandardSchemaV1,
+> {
+  /** Serializes the selected Result branch, preserving that branch schema's sync or async return. */
+  readonly serialize: <
+    TResult extends Result<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>,
+  >(
+    result: TResult,
+  ) => SerializedCodecOperationResult<TResult, TOkSerialize, TErrSerialize>;
+  /** Deserializes a known branch precisely, including status-only envelopes produced when JSON omits undefined payloads. */
+  readonly deserialize: {
+    (
+      value: SerializedOkEnvelope,
+    ): StandardSchemaOperationResult<
+      DeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+      TOkDeserialize
+    >;
+    (
+      value: SerializedErrEnvelope,
+    ): StandardSchemaOperationResult<
+      DeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+      TErrDeserialize
+    >;
+    (value: unknown): UnknownDeserializationResult<TOkDeserialize, TErrDeserialize>;
+  };
+}
+
+/** Checks only the Result envelope; the selected codec schema validates its optional payload. */
+function isSerializedResultEnvelope(value: unknown): value is SerializedResultEnvelope {
   return (
-    obj !== null &&
-    typeof obj === "object" &&
-    "status" in obj &&
-    ((obj.status === "ok" && "value" in obj) || (obj.status === "error" && "error" in obj))
+    value !== null &&
+    typeof value === "object" &&
+    "status" in value &&
+    (value.status === "ok" || value.status === "error")
   );
 }
 
-const serialize = <T, E>(result: Result<T, E>): SerializedResult<T, E> => {
-  return result.status === "ok"
-    ? { status: "ok", value: result.value }
-    : { status: "error", error: result.error };
+const isPromiseLike = <T>(value: T | PromiseLike<T>): value is PromiseLike<T> => {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  );
 };
 
-const deserialize = <T, E>(value: unknown): Result<T, E | ResultDeserializationError> => {
-  if (isSerializedResult(value)) {
-    return value.status === "ok"
-      ? (new Ok(value.value) as Result<T, E>)
-      : (new Err(value.error) as Result<T, E>);
+const runStandardSchemaValidation = <TResult>(
+  validate: () => TResult,
+  panicMessage: string,
+): TResult => {
+  return tryOrPanic(validate, panicMessage);
+};
+
+const mapStandardSchemaValidation = <T, U>(
+  validation: StandardSchemaV1.Result<T> | PromiseLike<StandardSchemaV1.Result<T>>,
+  panicMessage: string,
+  mapValidation: (validation: StandardSchemaV1.Result<T>) => U,
+): U | Promise<U> => {
+  if (isPromiseLike(validation)) {
+    return Promise.resolve(validation)
+      .catch((cause: unknown) => {
+        throw panic(panicMessage, cause);
+      })
+      .then(mapValidation);
   }
-  return err(new ResultDeserializationError({ value }));
+  return mapValidation(validation);
 };
 
-/**
- * @deprecated Use `Result.deserialize` instead. Will be removed in 3.0.
- */
-const hydrate = <T, E>(value: unknown): Result<T, E | ResultDeserializationError> => {
-  return deserialize(value);
+const unwrapCodecValidation = <T, E>(
+  validation: StandardSchemaV1.Result<T>,
+  makeError: (issues: ReadonlyArray<StandardSchemaV1.Issue>) => E,
+): Result<T, E> => {
+  if ("issues" in validation && validation.issues) {
+    return err(makeError(validation.issues));
+  }
+  return ok(validation.value);
+};
+
+const serializeWithSchema = <TSchema extends StandardSchemaV1>(
+  schema: TSchema,
+  value: StandardSchemaInput<TSchema>,
+):
+  | Result<StandardSchemaOutput<TSchema>, ResultSerializationError>
+  | Promise<Result<StandardSchemaOutput<TSchema>, ResultSerializationError>> => {
+  const validation = runStandardSchemaValidation(
+    () => schema["~standard"].validate(value),
+    "Result.codec serialize schema threw",
+  );
+  return mapStandardSchemaValidation(
+    validation,
+    "Result.codec serialize schema threw",
+    (resolved) =>
+      unwrapCodecValidation(resolved, (issues) => new ResultSerializationError({ value, issues })),
+  );
+};
+
+const deserializeWithSchema = <TSchema extends StandardSchemaV1>(
+  schema: TSchema,
+  value: unknown,
+):
+  | Result<StandardSchemaOutput<TSchema>, ResultDeserializationError>
+  | Promise<Result<StandardSchemaOutput<TSchema>, ResultDeserializationError>> => {
+  const validation = runStandardSchemaValidation(
+    () => schema["~standard"].validate(value),
+    "Result.codec deserialize schema threw",
+  );
+  return mapStandardSchemaValidation(
+    validation,
+    "Result.codec deserialize schema threw",
+    (resolved) =>
+      unwrapCodecValidation(
+        resolved,
+        (issues) => new ResultDeserializationError({ value, issues }),
+      ),
+  );
+};
+
+const codec = <
+  TOkSerialize extends StandardSchemaV1,
+  TErrSerialize extends StandardSchemaV1,
+  TOkDeserialize extends StandardSchemaV1,
+  TErrDeserialize extends StandardSchemaV1,
+>(
+  config: ResultCodecConfig<TOkSerialize, TErrSerialize, TOkDeserialize, TErrDeserialize>,
+): ResultCodec<TOkSerialize, TErrSerialize, TOkDeserialize, TErrDeserialize> => {
+  type SerializeResult = SerializedCodecResult<TOkSerialize, TErrSerialize>;
+  type DeserializeResult = DeserializedCodecResult<TOkDeserialize, TErrDeserialize>;
+  type InputResult = Result<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>;
+
+  const finishOkSerialization = (
+    resolved: Result<StandardSchemaOutput<TOkSerialize>, ResultSerializationError>,
+  ): SerializeResult => {
+    if (resolved.status === "error") {
+      return err(resolved.error);
+    }
+    return ok({ status: "ok", value: resolved.value });
+  };
+
+  const finishErrSerialization = (
+    resolved: Result<StandardSchemaOutput<TErrSerialize>, ResultSerializationError>,
+  ): SerializeResult => {
+    if (resolved.status === "error") {
+      return err(resolved.error);
+    }
+    return ok({ status: "error", error: resolved.value });
+  };
+
+  function serializeResult<TResult extends InputResult>(
+    result: TResult,
+  ): SerializedCodecOperationResult<TResult, TOkSerialize, TErrSerialize>;
+  function serializeResult(result: InputResult): SerializeResult | Promise<SerializeResult> {
+    if (result.status === "ok") {
+      const serialized = serializeWithSchema(config.serialize.ok, result.value);
+      return isPromiseLike(serialized)
+        ? Promise.resolve(serialized).then(finishOkSerialization)
+        : finishOkSerialization(serialized);
+    }
+    const serialized = serializeWithSchema(config.serialize.err, result.error);
+    return isPromiseLike(serialized)
+      ? Promise.resolve(serialized).then(finishErrSerialization)
+      : finishErrSerialization(serialized);
+  }
+
+  const finishOkDeserialization = (
+    resolved: Result<StandardSchemaOutput<TOkDeserialize>, ResultDeserializationError>,
+  ): DeserializeResult => {
+    if (resolved.status === "error") {
+      return err(resolved.error);
+    }
+    return ok(resolved.value);
+  };
+
+  const finishErrDeserialization = (
+    resolved: Result<StandardSchemaOutput<TErrDeserialize>, ResultDeserializationError>,
+  ): DeserializeResult => {
+    if (resolved.status === "error") {
+      return err(resolved.error);
+    }
+    return err(resolved.value);
+  };
+
+  function deserializeResult(
+    value: SerializedOkEnvelope,
+  ): StandardSchemaOperationResult<DeserializeResult, TOkDeserialize>;
+  function deserializeResult(
+    value: SerializedErrEnvelope,
+  ): StandardSchemaOperationResult<DeserializeResult, TErrDeserialize>;
+  function deserializeResult(
+    value: unknown,
+  ): UnknownDeserializationResult<TOkDeserialize, TErrDeserialize>;
+  function deserializeResult(value: unknown): DeserializeResult | Promise<DeserializeResult> {
+    if (!isSerializedResultEnvelope(value)) {
+      return err(new ResultDeserializationError({ value }));
+    }
+    if (value.status === "ok") {
+      const deserialized = deserializeWithSchema(config.deserialize.ok, value.value);
+      return isPromiseLike(deserialized)
+        ? Promise.resolve(deserialized).then(finishOkDeserialization)
+        : finishOkDeserialization(deserialized);
+    }
+    const deserialized = deserializeWithSchema(config.deserialize.err, value.error);
+    return isPromiseLike(deserialized)
+      ? Promise.resolve(deserialized).then(finishErrDeserialization)
+      : finishErrDeserialization(deserialized);
+  }
+
+  return {
+    serialize: serializeResult,
+    deserialize: deserializeResult,
+  } satisfies ResultCodec<TOkSerialize, TErrSerialize, TOkDeserialize, TErrDeserialize>;
 };
 
 const partition = <T, E>(results: readonly Result<T, E>[]): [T[], E[]] => {
@@ -774,34 +1079,18 @@ export const Result = {
    */
   await: resultAwait,
   /**
-   * Converts a Result to a plain object for serialization (e.g., RPC, server actions).
+   * Builds a Result-level codec from Standard Schema-compatible serializers/deserializers.
    *
    * @example
-   * const serialized = Result.serialize(ok(42)); // { status: "ok", value: 42 }
-   */
-  serialize,
-  /**
-   * Rehydrates serialized Result from RPC back into Ok/Err instances.
-   * Returns `Err<ResultDeserializationError>` if the input is not a valid serialized Result.
+   * const UserResultCodec = Result.codec({
+   *   serialize: { ok: UserToWireSchema, err: AppErrorToWireSchema },
+   *   deserialize: { ok: WireToUserSchema, err: WireToAppErrorSchema },
+   * });
    *
-   * @example
-   * // Valid serialized Result
-   * const result = Result.deserialize<User, AppError>(rpcResponse);
-   * if (Result.isOk(result)) {
-   *   console.log(result.value); // User
-   * }
-   *
-   * // Invalid input returns ResultDeserializationError
-   * const invalid = Result.deserialize({ foo: "bar" });
-   * if (Result.isError(invalid) && ResultDeserializationError.is(invalid.error)) {
-   *   console.log("Bad input:", invalid.error.value);
-   * }
+   * const outbound = UserResultCodec.serialize(Result.ok(user));
+   * const inbound = outbound.andThen((wire) => UserResultCodec.deserialize(wire));
    */
-  deserialize,
-  /**
-   * @deprecated Use `Result.deserialize` instead. Will be removed in 3.0.
-   */
-  hydrate,
+  codec,
   /**
    * Splits array of Results into tuple of [okValues, errorValues].
    *

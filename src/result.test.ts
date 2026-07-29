@@ -1,6 +1,22 @@
+import fc from "fast-check";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { Result, Ok, Err, type TryContext, type TryPromiseContext } from "./result";
-import { Panic, ResultDeserializationError, UnhandledException } from "./error";
+import {
+  Result,
+  Ok,
+  Err,
+  type Result as ResultType,
+  type SerializedResult,
+  type StandardSchemaResult,
+  type StandardSchemaV1,
+  type TryContext,
+  type TryPromiseContext,
+} from "./result";
+import {
+  Panic,
+  ResultDeserializationError,
+  ResultSerializationError,
+  UnhandledException,
+} from "./error";
 
 const longConstantRetryConfig = {
   times: 3,
@@ -14,6 +30,52 @@ const createDeferred = () => {
     resolve = resolvePromise;
   });
   return { promise, resolve } as const;
+};
+
+type SchemaResult<T> = StandardSchemaResult<T>;
+type SyncSchema<Input, Output> = StandardSchemaV1<Input, Output> & {
+  readonly "~standard": StandardSchemaV1.Props<Input, Output> & {
+    readonly validate: (value: unknown) => SchemaResult<Output>;
+  };
+};
+type AsyncSchema<Input, Output> = StandardSchemaV1<Input, Output> & {
+  readonly "~standard": StandardSchemaV1.Props<Input, Output> & {
+    readonly validate: (value: unknown) => Promise<SchemaResult<Output>>;
+  };
+};
+
+const makeSchema = <Input, Output>(
+  vendor: string,
+  validate: (value: unknown) => SchemaResult<Output>,
+): SyncSchema<Input, Output> => ({
+  "~standard": {
+    version: 1,
+    vendor,
+    types: undefined as unknown as {
+      input: Input;
+      output: Output;
+    },
+    validate,
+  },
+});
+
+const makeAsyncSchema = <Input, Output>(
+  vendor: string,
+  validate: (value: unknown) => Promise<SchemaResult<Output>>,
+): AsyncSchema<Input, Output> => ({
+  "~standard": {
+    version: 1,
+    vendor,
+    types: undefined as unknown as {
+      input: Input;
+      output: Output;
+    },
+    validate,
+  },
+});
+
+const identitySchema = <T>(vendor: string): SyncSchema<T, T> => {
+  return makeSchema<T, T>(vendor, (value) => ({ value: value as T }));
 };
 
 describe("Result", () => {
@@ -81,8 +143,21 @@ describe("Result", () => {
       expect(matched).toBe("matched");
     });
 
-    it("Ok<void> serializes correctly", () => {
-      expect(Result.serialize(Result.ok())).toEqual({ status: "ok", value: undefined });
+    it("Ok<void> roundtrips through a JSON transport with a codec", () => {
+      const VoidCodec = Result.codec({
+        serialize: { ok: identitySchema<void>("void-ok"), err: identitySchema<never>("void-err") },
+        deserialize: {
+          ok: identitySchema<void>("void-ok-in"),
+          err: identitySchema<never>("void-err-in"),
+        },
+      });
+      const serialized = VoidCodec.serialize(Result.ok()).unwrap();
+      const json = JSON.stringify(serialized);
+      const received: unknown = JSON.parse(json);
+
+      expect(serialized).toEqual({ status: "ok", value: undefined });
+      expect(json).toBe('{"status":"ok"}');
+      expect(VoidCodec.deserialize(received)).toEqual(Result.ok());
     });
   });
 
@@ -98,6 +173,26 @@ describe("Result", () => {
       const error = new Error("oops");
       const result = Result.err(error);
       expect(result.error).toBe(error);
+    });
+
+    it("Err<undefined> roundtrips through a JSON transport with a codec", () => {
+      const UndefinedErrorCodec = Result.codec({
+        serialize: {
+          ok: identitySchema<never>("never-ok"),
+          err: identitySchema<undefined>("undefined-err"),
+        },
+        deserialize: {
+          ok: identitySchema<never>("never-ok-in"),
+          err: identitySchema<undefined>("undefined-err-in"),
+        },
+      });
+      const serialized = UndefinedErrorCodec.serialize(Result.err(undefined)).unwrap();
+      const json = JSON.stringify(serialized);
+      const received: unknown = JSON.parse(json);
+
+      expect(serialized).toEqual({ status: "error", error: undefined });
+      expect(json).toBe('{"status":"error"}');
+      expect(UndefinedErrorCodec.deserialize(received)).toEqual(Result.err(undefined));
     });
   });
 
@@ -1909,138 +2004,598 @@ describe("Result", () => {
     });
   });
 
-  describe("serialize", () => {
-    it("serializes Ok to plain object", () => {
-      const result = Result.ok(42);
-      const serialized = Result.serialize(result);
-      expect(serialized).toEqual({ status: "ok", value: 42 });
+  describe("codec", () => {
+    type User = {
+      id: string;
+      name: string;
+      createdAt: Date;
+    };
+
+    type UserWire = {
+      id: string;
+      display_name: string;
+      created_at_iso: string;
+    };
+
+    type AppError = {
+      code: "NOT_FOUND" | "BAD_INPUT";
+      message: string;
+      retryable: boolean;
+    };
+
+    type AppErrorWire = {
+      type: AppError["code"];
+      message: string;
+      retryable: boolean;
+    };
+
+    const userToWire = makeSchema<User, UserWire>("user-to-wire", (value) => {
+      const user = value as User;
+      return {
+        value: {
+          id: user.id,
+          display_name: user.name,
+          created_at_iso: user.createdAt.toISOString(),
+        },
+      };
     });
 
-    it("serializes Err to plain object", () => {
-      const result = Result.err("fail");
-      const serialized = Result.serialize(result);
-      expect(serialized).toEqual({ status: "error", error: "fail" });
+    const errorToWire = makeSchema<AppError, AppErrorWire>("error-to-wire", (value) => {
+      const error = value as AppError;
+      return {
+        value: {
+          type: error.code,
+          message: error.message,
+          retryable: error.retryable,
+        },
+      };
     });
 
-    it("serializes complex values", () => {
-      const result = Result.ok({ id: 1, name: "test", nested: { a: [1, 2, 3] } });
-      const serialized = Result.serialize(result);
-      expect(serialized).toEqual({
+    const wireToUser = makeSchema<unknown, User>("wire-to-user", (value) => {
+      if (value === null || typeof value !== "object") {
+        return { issues: [{ message: "Expected object" }] };
+      }
+
+      const input = value as Record<string, unknown>;
+      if (
+        typeof input.id !== "string" ||
+        typeof input.display_name !== "string" ||
+        typeof input.created_at_iso !== "string"
+      ) {
+        return {
+          issues: [
+            ...(typeof input.id !== "string" ? [{ message: "Expected string", path: ["id"] }] : []),
+            ...(typeof input.display_name !== "string"
+              ? [{ message: "Expected string", path: ["display_name"] }]
+              : []),
+            ...(typeof input.created_at_iso !== "string"
+              ? [{ message: "Expected string", path: ["created_at_iso"] }]
+              : []),
+          ],
+        };
+      }
+
+      const createdAt = new Date(input.created_at_iso);
+      if (Number.isNaN(createdAt.getTime())) {
+        return { issues: [{ message: "Expected valid ISO timestamp", path: ["created_at_iso"] }] };
+      }
+
+      return {
+        value: {
+          id: input.id,
+          name: input.display_name,
+          createdAt,
+        },
+      };
+    });
+
+    const wireToError = makeSchema<unknown, AppError>("wire-to-error", (value) => {
+      if (value === null || typeof value !== "object") {
+        return { issues: [{ message: "Expected object" }] };
+      }
+
+      const input = value as Record<string, unknown>;
+      const code = input.type;
+      const validCode = code === "NOT_FOUND" || code === "BAD_INPUT";
+      if (!validCode || typeof input.message !== "string" || typeof input.retryable !== "boolean") {
+        return {
+          issues: [
+            ...(!validCode
+              ? [{ message: 'Expected "NOT_FOUND" | "BAD_INPUT"', path: ["type"] }]
+              : []),
+            ...(typeof input.message !== "string"
+              ? [{ message: "Expected string", path: ["message"] }]
+              : []),
+            ...(typeof input.retryable !== "boolean"
+              ? [{ message: "Expected boolean", path: ["retryable"] }]
+              : []),
+          ],
+        };
+      }
+
+      return {
+        value: {
+          code,
+          message: input.message,
+          retryable: input.retryable,
+        },
+      };
+    });
+
+    const UserResultCodec = Result.codec({
+      serialize: { ok: userToWire, err: errorToWire },
+      deserialize: { ok: wireToUser, err: wireToError },
+    });
+
+    it("serializes Ok with outbound schema", () => {
+      const serialized = UserResultCodec.serialize(
+        Result.ok({ id: "1", name: "Ada", createdAt: new Date("2026-05-28T12:00:00.000Z") }),
+      );
+      expect(serialized).toBeInstanceOf(Ok);
+      expect(serialized.unwrap()).toEqual({
         status: "ok",
-        value: { id: 1, name: "test", nested: { a: [1, 2, 3] } },
+        value: {
+          id: "1",
+          display_name: "Ada",
+          created_at_iso: "2026-05-28T12:00:00.000Z",
+        },
       });
     });
 
-    it("serializes null and undefined values", () => {
-      expect(Result.serialize(Result.ok(null))).toEqual({ status: "ok", value: null });
-      expect(Result.serialize(Result.ok(undefined))).toEqual({ status: "ok", value: undefined });
-    });
-  });
-
-  describe("deserialize", () => {
-    it("deserializes Ok object to Ok instance", () => {
-      const serialized = { status: "ok" as const, value: 42 };
-      const result = Result.deserialize<number, string>(serialized);
-      expect(Result.isOk(result)).toBe(true);
-      expect(result).toBeInstanceOf(Ok);
-      expect(result.unwrap()).toBe(42);
+    it("serializes Err with outbound schema", () => {
+      const serialized = UserResultCodec.serialize(
+        Result.err({ code: "NOT_FOUND", message: "missing", retryable: false }),
+      );
+      expect(serialized).toBeInstanceOf(Ok);
+      expect(serialized.unwrap()).toEqual({
+        status: "error",
+        error: { type: "NOT_FOUND", message: "missing", retryable: false },
+      });
     });
 
-    it("deserializes Err object to Err instance", () => {
-      const serialized = { status: "error" as const, error: "fail" };
-      const result = Result.deserialize<number, string>(serialized);
+    it("returns ResultSerializationError with ok payload issues", () => {
+      const RejectingOkCodec = Result.codec({
+        serialize: {
+          ok: makeSchema<unknown, UserWire>("reject-ok-to-wire", () => ({
+            issues: [{ message: "Expected serializable user", path: ["createdAt"] }],
+          })),
+          err: errorToWire,
+        },
+        deserialize: { ok: wireToUser, err: wireToError },
+      });
+
+      const result = RejectingOkCodec.serialize(Result.ok({ createdAt: "nope" }));
       expect(Result.isError(result)).toBe(true);
+      if (Result.isError(result) && ResultSerializationError.is(result.error)) {
+        expect(result.error.message).toBe("Failed to serialize Result payload");
+        expect(result.error.value).toEqual({ createdAt: "nope" });
+        expect(result.error.issues).toEqual([
+          { message: "Expected serializable user", path: ["createdAt"] },
+        ]);
+      }
+    });
+
+    it("returns ResultSerializationError with err payload issues", () => {
+      const RejectingErrCodec = Result.codec({
+        serialize: {
+          ok: userToWire,
+          err: makeSchema<unknown, AppErrorWire>("reject-error-to-wire", () => ({
+            issues: [{ message: "Expected serializable app error", path: ["code"] }],
+          })),
+        },
+        deserialize: { ok: wireToUser, err: wireToError },
+      });
+
+      const result = RejectingErrCodec.serialize(Result.err({ code: "NOPE" }));
+      expect(Result.isError(result)).toBe(true);
+      if (Result.isError(result) && ResultSerializationError.is(result.error)) {
+        expect(result.error.value).toEqual({ code: "NOPE" });
+        expect(result.error.issues).toEqual([
+          { message: "Expected serializable app error", path: ["code"] },
+        ]);
+      }
+    });
+
+    it("deserializes Ok payload with inbound schema", () => {
+      const result = UserResultCodec.deserialize({
+        status: "ok",
+        value: {
+          id: "1",
+          display_name: "Ada",
+          created_at_iso: "2026-05-28T12:00:00.000Z",
+        },
+      });
+
+      expect(result).toBeInstanceOf(Ok);
+      expect(result.unwrap()).toEqual({
+        id: "1",
+        name: "Ada",
+        createdAt: new Date("2026-05-28T12:00:00.000Z"),
+      });
+    });
+
+    it("deserializes Err payload with inbound schema", () => {
+      const result = UserResultCodec.deserialize({
+        status: "error",
+        error: {
+          type: "BAD_INPUT",
+          message: "bad email",
+          retryable: false,
+        },
+      });
+
       expect(result).toBeInstanceOf(Err);
       if (Result.isError(result)) {
-        expect(result.error).toBe("fail");
+        expect(result.error).toEqual({ code: "BAD_INPUT", message: "bad email", retryable: false });
       }
     });
 
-    it("returns ResultDeserializationError for non-Result objects", () => {
-      const testCases = [
-        { foo: "bar" },
-        null,
-        42,
-        { status: "ok" }, // missing value
-        { status: "error" }, // missing error
-      ];
-
-      for (const input of testCases) {
-        const result = Result.deserialize(input);
-        expect(Result.isError(result)).toBe(true);
-        if (Result.isError(result)) {
-          expect(result.error).toBeInstanceOf(ResultDeserializationError);
-          expect((result.error as ResultDeserializationError).value).toBe(input);
-        }
+    it("returns ResultDeserializationError for invalid outer shape", () => {
+      const result = UserResultCodec.deserialize({ foo: "bar" });
+      expect(Result.isError(result)).toBe(true);
+      if (Result.isError(result) && ResultDeserializationError.is(result.error)) {
+        expect(result.error.message).toBe(
+          'Failed to deserialize value as Result: expected { status: "ok", value } or { status: "error", error }',
+        );
+        expect(result.error.value).toEqual({ foo: "bar" });
       }
     });
 
-    it("deserializes complex values", () => {
-      const serialized = { status: "ok" as const, value: { id: 1, items: [1, 2] } };
-      const result = Result.deserialize<{ id: number; items: number[] }, string>(serialized);
-      expect(result.unwrap()).toEqual({ id: 1, items: [1, 2] });
-    });
-  });
+    it("passes a missing Ok payload to its schema as undefined", () => {
+      const result = UserResultCodec.deserialize({ status: "ok" });
 
-  describe("serialize/deserialize roundtrip", () => {
-    it("roundtrips Ok", () => {
-      const original = Result.ok({ id: 42, name: "test" });
-      const serialized = Result.serialize(original);
-      const deserialized = Result.deserialize<{ id: number; name: string }, never>(serialized);
-
-      expect(deserialized).toBeInstanceOf(Ok);
-      expect(deserialized.unwrap()).toEqual({ id: 42, name: "test" });
-    });
-
-    it("roundtrips Err", () => {
-      const original = Result.err({ code: "NOT_FOUND", message: "User not found" });
-      const serialized = Result.serialize(original);
-      const deserialized = Result.deserialize<never, { code: string; message: string }>(serialized);
-
-      expect(deserialized).toBeInstanceOf(Err);
-      if (Result.isError(deserialized)) {
-        expect(deserialized.error).toEqual({ code: "NOT_FOUND", message: "User not found" });
+      expect(Result.isError(result)).toBe(true);
+      if (Result.isError(result) && ResultDeserializationError.is(result.error)) {
+        expect(result.error.message).toBe("Failed to deserialize Result payload");
+        expect(result.error.value).toBe(undefined);
+        expect(result.error.issues).toEqual([{ message: "Expected object" }]);
       }
     });
 
-    it("roundtrips through JSON.stringify/parse", () => {
-      const original = Result.ok({ id: 1, data: [1, 2, 3] });
-      const json = JSON.stringify(Result.serialize(original));
+    it("passes a missing Err payload to its schema as undefined", () => {
+      const result = UserResultCodec.deserialize({ status: "error" });
+
+      expect(Result.isError(result)).toBe(true);
+      if (Result.isError(result) && ResultDeserializationError.is(result.error)) {
+        expect(result.error.message).toBe("Failed to deserialize Result payload");
+        expect(result.error.value).toBe(undefined);
+        expect(result.error.issues).toEqual([{ message: "Expected object" }]);
+      }
+    });
+
+    it("returns ResultDeserializationError with ok payload issues", () => {
+      const result = UserResultCodec.deserialize({
+        status: "ok",
+        value: { id: "1", display_name: 42, created_at_iso: "nope" },
+      });
+      expect(Result.isError(result)).toBe(true);
+      if (Result.isError(result) && ResultDeserializationError.is(result.error)) {
+        expect(result.error.message).toBe("Failed to deserialize Result payload");
+        expect(result.error.issues).toEqual([
+          { message: "Expected string", path: ["display_name"] },
+        ]);
+      }
+    });
+
+    it("returns ResultDeserializationError with err payload issues", () => {
+      const result = UserResultCodec.deserialize({
+        status: "error",
+        error: { type: "NOPE", message: 123, retryable: "sometimes" },
+      });
+      expect(Result.isError(result)).toBe(true);
+      if (Result.isError(result) && ResultDeserializationError.is(result.error)) {
+        expect(result.error.issues).toEqual([
+          { message: 'Expected "NOT_FOUND" | "BAD_INPUT"', path: ["type"] },
+          { message: "Expected string", path: ["message"] },
+          { message: "Expected boolean", path: ["retryable"] },
+        ]);
+      }
+    });
+
+    it("roundtrips through JSON stringify/parse", () => {
+      const original = Result.ok({
+        id: "1",
+        name: "Ada",
+        createdAt: new Date("2026-05-28T12:00:00.000Z"),
+      });
+      const serialized = UserResultCodec.serialize(original).unwrap();
+      const json = JSON.stringify(serialized);
       const parsed = JSON.parse(json);
-      const deserialized = Result.deserialize<{ id: number; data: number[] }, never>(parsed);
+      const deserialized = UserResultCodec.deserialize(parsed);
 
-      expect(deserialized?.unwrap()).toEqual({ id: 1, data: [1, 2, 3] });
-    });
-  });
-
-  describe("hydrate (deprecated)", () => {
-    it("hydrates serialized Ok", () => {
-      const serialized = { status: "ok" as const, value: 42 };
-      const result = Result.hydrate<number, string>(serialized);
-      expect(Result.isOk(result)).toBe(true);
-      expect(result).toBeInstanceOf(Ok);
-      expect(result.unwrap()).toBe(42);
+      expect(deserialized.unwrap()).toEqual({
+        id: "1",
+        name: "Ada",
+        createdAt: new Date("2026-05-28T12:00:00.000Z"),
+      });
     });
 
-    it("hydrates serialized Err", () => {
-      const serialized = { status: "error" as const, error: "fail" };
-      const result = Result.hydrate<number, string>(serialized);
-      expect(Result.isError(result)).toBe(true);
+    it("roundtrips arbitrary Ok and Err payloads through JSON", () => {
+      fc.assert(
+        fc.property(
+          fc.record({
+            id: fc.string(),
+            name: fc.string(),
+            createdAt: fc.date({ noInvalidDate: true }),
+          }),
+          (user) => {
+            const serialized = UserResultCodec.serialize(Result.ok(user)).unwrap();
+            const deserialized = UserResultCodec.deserialize(
+              JSON.parse(JSON.stringify(serialized)),
+            );
+            expect(deserialized).toEqual(Result.ok(user));
+          },
+        ),
+      );
+      fc.assert(
+        fc.property(
+          fc.record({
+            code: fc.constantFrom("NOT_FOUND" as const, "BAD_INPUT" as const),
+            message: fc.string(),
+            retryable: fc.boolean(),
+          }),
+          (appError) => {
+            const serialized = UserResultCodec.serialize(Result.err(appError)).unwrap();
+            const deserialized = UserResultCodec.deserialize(
+              JSON.parse(JSON.stringify(serialized)),
+            );
+            expect(deserialized).toEqual(Result.err(appError));
+          },
+        ),
+      );
+    });
+
+    it("supports async Standard Schema validators and infers Promise return types", async () => {
+      const AsyncUserResultCodec = Result.codec({
+        serialize: {
+          ok: makeAsyncSchema<User, UserWire>("async-user-to-wire", async (value) => {
+            const user = value as User;
+            return {
+              value: {
+                id: user.id,
+                display_name: user.name,
+                created_at_iso: user.createdAt.toISOString(),
+              },
+            };
+          }),
+          err: errorToWire,
+        },
+        deserialize: {
+          ok: makeAsyncSchema<unknown, User>("async-wire-to-user", async (value) => {
+            return wireToUser["~standard"].validate(value);
+          }),
+          err: wireToError,
+        },
+      });
+
+      const serialized = AsyncUserResultCodec.serialize(
+        Result.ok({ id: "1", name: "Ada", createdAt: new Date("2026-05-28T12:00:00.000Z") }),
+      );
+      const deserialized = AsyncUserResultCodec.deserialize({
+        status: "ok",
+        value: {
+          id: "1",
+          display_name: "Ada",
+          created_at_iso: "2026-05-28T12:00:00.000Z",
+        },
+      });
+
+      expectTypeOf(serialized).toEqualTypeOf<
+        Promise<ResultType<SerializedResult<UserWire, AppErrorWire>, ResultSerializationError>>
+      >();
+      expectTypeOf(deserialized).toEqualTypeOf<
+        Promise<ResultType<User, AppError | ResultDeserializationError>>
+      >();
+      await expect(serialized).resolves.toBeInstanceOf(Ok);
+      await expect(serialized).resolves.toEqual(
+        Result.ok({
+          status: "ok",
+          value: {
+            id: "1",
+            display_name: "Ada",
+            created_at_iso: "2026-05-28T12:00:00.000Z",
+          },
+        }),
+      );
+      await expect(deserialized).resolves.toBeInstanceOf(Ok);
+    });
+
+    it("infers serialization and deserialization async behavior independently", async () => {
+      const SyncSerializeAsyncDeserializeCodec = Result.codec({
+        serialize: {
+          ok: identitySchema<string>("sync-ok-serializer"),
+          err: identitySchema<number>("sync-err-serializer"),
+        },
+        deserialize: {
+          ok: makeAsyncSchema<unknown, string>("async-ok-deserializer", async (value) => ({
+            value: String(value),
+          })),
+          err: makeAsyncSchema<unknown, number>("async-err-deserializer", async (value) => ({
+            value: Number(value),
+          })),
+        },
+      });
+      const AsyncSerializeSyncDeserializeCodec = Result.codec({
+        serialize: {
+          ok: makeAsyncSchema<string, string>("async-ok-serializer", async (value) => ({
+            value: String(value),
+          })),
+          err: makeAsyncSchema<number, number>("async-err-serializer", async (value) => ({
+            value: Number(value),
+          })),
+        },
+        deserialize: {
+          ok: identitySchema<string>("sync-ok-deserializer"),
+          err: identitySchema<number>("sync-err-deserializer"),
+        },
+      });
+
+      const syncSerialized = SyncSerializeAsyncDeserializeCodec.serialize(Result.ok("value"));
+      const asyncDeserialized = SyncSerializeAsyncDeserializeCodec.deserialize({
+        status: "ok",
+        value: "value",
+      });
+      const asyncSerialized = AsyncSerializeSyncDeserializeCodec.serialize(Result.err(42));
+      const syncDeserialized = AsyncSerializeSyncDeserializeCodec.deserialize({
+        status: "error",
+        error: 42,
+      });
+
+      expectTypeOf(syncSerialized).toEqualTypeOf<
+        ResultType<SerializedResult<string, number>, ResultSerializationError>
+      >();
+      expectTypeOf(asyncDeserialized).toEqualTypeOf<
+        Promise<ResultType<string, number | ResultDeserializationError>>
+      >();
+      expectTypeOf(asyncSerialized).toEqualTypeOf<
+        Promise<ResultType<SerializedResult<string, number>, ResultSerializationError>>
+      >();
+      expectTypeOf(syncDeserialized).toEqualTypeOf<
+        ResultType<string, number | ResultDeserializationError>
+      >();
+      expect(syncSerialized).toEqual(Result.ok({ status: "ok", value: "value" }));
+      await expect(asyncDeserialized).resolves.toEqual(Result.ok("value"));
+      await expect(asyncSerialized).resolves.toEqual(Result.ok({ status: "error", error: 42 }));
+      expect(syncDeserialized).toEqual(Result.err(42));
+    });
+
+    it("infers mixed Result branches without runtime mode configuration", async () => {
+      const MixedBranchCodec = Result.codec({
+        serialize: {
+          ok: identitySchema<string>("sync-ok-serializer"),
+          err: makeAsyncSchema<number, number>("async-err-serializer", async (value) => ({
+            value: Number(value),
+          })),
+        },
+        deserialize: {
+          ok: identitySchema<string>("sync-ok-deserializer"),
+          err: makeAsyncSchema<unknown, number>("async-err-deserializer", async (value) => ({
+            value: Number(value),
+          })),
+        },
+      });
+      const getResult = (): ResultType<string, number> => Result.ok("value");
+      const unknownEnvelope: unknown = { status: "error", error: 42 };
+
+      const serializedOk = MixedBranchCodec.serialize(Result.ok("value"));
+      const serializedErr = MixedBranchCodec.serialize(Result.err(42));
+      const serializedUnknownBranch = MixedBranchCodec.serialize(getResult());
+      const deserializedOk = MixedBranchCodec.deserialize({ status: "ok", value: "value" });
+      const deserializedErr = MixedBranchCodec.deserialize({ status: "error", error: 42 });
+      const deserializedUnknownEnvelope = MixedBranchCodec.deserialize(unknownEnvelope);
+
+      type Serialized = ResultType<SerializedResult<string, number>, ResultSerializationError>;
+      type Deserialized = ResultType<string, number | ResultDeserializationError>;
+      expectTypeOf(serializedOk).toEqualTypeOf<Serialized>();
+      expectTypeOf(serializedErr).toEqualTypeOf<Promise<Serialized>>();
+      expectTypeOf(serializedUnknownBranch).toEqualTypeOf<Serialized | Promise<Serialized>>();
+      expectTypeOf(deserializedOk).toEqualTypeOf<Deserialized>();
+      expectTypeOf(deserializedErr).toEqualTypeOf<Promise<Deserialized>>();
+      expectTypeOf(deserializedUnknownEnvelope).toEqualTypeOf<
+        Deserialized | Promise<Deserialized>
+      >();
+      expect(serializedOk).toEqual(Result.ok({ status: "ok", value: "value" }));
+      await expect(serializedErr).resolves.toEqual(Result.ok({ status: "error", error: 42 }));
+      expect(deserializedOk).toEqual(Result.ok("value"));
+      await expect(deserializedErr).resolves.toEqual(Result.err(42));
+      await expect(deserializedUnknownEnvelope).resolves.toEqual(Result.err(42));
+    });
+
+    it("returns a synchronous envelope error even when payload schemas are async", () => {
+      const AsyncCodec = Result.codec({
+        serialize: {
+          ok: identitySchema<string>("sync-ok-serializer"),
+          err: identitySchema<number>("sync-err-serializer"),
+        },
+        deserialize: {
+          ok: makeAsyncSchema<unknown, string>("async-ok-deserializer", async (value) => ({
+            value: String(value),
+          })),
+          err: makeAsyncSchema<unknown, number>("async-err-deserializer", async (value) => ({
+            value: Number(value),
+          })),
+        },
+      });
+      const invalidEnvelope: unknown = { nope: true };
+
+      const result = AsyncCodec.deserialize(invalidEnvelope);
+
+      expectTypeOf(result).toEqualTypeOf<
+        | ResultType<string, number | ResultDeserializationError>
+        | Promise<ResultType<string, number | ResultDeserializationError>>
+      >();
       expect(result).toBeInstanceOf(Err);
-      if (Result.isError(result)) {
-        expect(result.error).toBe("fail");
-      }
     });
 
-    it("returns ResultDeserializationError for non-Result objects", () => {
-      const testCases = [{ foo: "bar" }, null, 42];
-      for (const input of testCases) {
-        const result = Result.hydrate(input);
-        expect(Result.isError(result)).toBe(true);
-        if (Result.isError(result)) {
-          expect(result.error).toBeInstanceOf(ResultDeserializationError);
-        }
-      }
+    it("panics when an async serialization schema rejects", async () => {
+      const cause = new Error("async serialization failed");
+      const RejectingSerializationCodec = Result.codec({
+        serialize: {
+          ok: makeAsyncSchema<unknown, unknown>("rejecting-serializer", async () => {
+            throw cause;
+          }),
+          err: identitySchema<never>("identity-error-serializer"),
+        },
+        deserialize: {
+          ok: identitySchema<unknown>("identity-ok-deserializer"),
+          err: identitySchema<never>("identity-error-deserializer"),
+        },
+      });
+
+      await expect(RejectingSerializationCodec.serialize(Result.ok("value"))).rejects.toMatchObject(
+        {
+          _tag: "Panic",
+          message: "Result.codec serialize schema threw",
+          cause,
+        },
+      );
+    });
+
+    it("panics when an async deserialization schema rejects", async () => {
+      const cause = new Error("async deserialization failed");
+      const RejectingDeserializationCodec = Result.codec({
+        serialize: {
+          ok: identitySchema<unknown>("identity-ok-serializer"),
+          err: identitySchema<never>("identity-error-serializer"),
+        },
+        deserialize: {
+          ok: makeAsyncSchema<unknown, unknown>("rejecting-deserializer", async () => {
+            throw cause;
+          }),
+          err: identitySchema<never>("identity-error-deserializer"),
+        },
+      });
+
+      await expect(
+        RejectingDeserializationCodec.deserialize({ status: "ok", value: "value" }),
+      ).rejects.toMatchObject({
+        _tag: "Panic",
+        message: "Result.codec deserialize schema threw",
+        cause,
+      });
+    });
+
+    it("preserves strong type inference for serialize and deserialize", () => {
+      const outbound = UserResultCodec.serialize(
+        Result.ok({ id: "1", name: "Ada", createdAt: new Date("2026-05-28T12:00:00.000Z") }),
+      );
+      const inbound = UserResultCodec.deserialize({
+        status: "error",
+        error: { type: "NOT_FOUND", message: "missing", retryable: false },
+      });
+
+      expectTypeOf(outbound).toEqualTypeOf<
+        ResultType<SerializedResult<UserWire, AppErrorWire>, ResultSerializationError>
+      >();
+      expectTypeOf(inbound).toEqualTypeOf<
+        ResultType<User, AppError | ResultDeserializationError>
+      >();
+
+      const serializeInvalidUser = (): void => {
+        // @ts-expect-error -- The Ok serializer requires the complete User input type.
+        UserResultCodec.serialize(Result.ok({ id: "missing-name-and-date" }));
+      };
+      expectTypeOf(serializeInvalidUser).toEqualTypeOf<() => void>();
     });
   });
 

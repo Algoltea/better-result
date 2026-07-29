@@ -1,5 +1,6 @@
 import { dual } from "./dual";
 import { err, panic, type Err } from "./core";
+import { type StandardSchemaV1 } from "./standard-schema";
 
 /** Serialize cause for JSON output */
 const serializeCause = (cause: unknown): unknown => {
@@ -256,11 +257,14 @@ export class UnhandledException extends TaggedError("UnhandledException")<{
   }
 }
 
+/** A Standard Schema validation issue reported while encoding or decoding a Result payload. */
+export type ResultCodecIssue = StandardSchemaV1.Issue;
+
 /**
- * Returned when Result.deserialize receives invalid input.
+ * Returned when Result codec deserialization receives an invalid envelope or payload.
  *
  * @example
- * const result = Result.deserialize(invalidData);
+ * const result = UserResultCodec.deserialize(invalidData);
  * if (Result.isError(result) && ResultDeserializationError.is(result.error)) {
  *   console.log("Invalid input:", result.error.value);
  * }
@@ -268,11 +272,38 @@ export class UnhandledException extends TaggedError("UnhandledException")<{
 export class ResultDeserializationError extends TaggedError("ResultDeserializationError")<{
   message: string;
   value: unknown;
+  issues?: ReadonlyArray<ResultCodecIssue>;
 }> {
-  constructor(args: { value: unknown }) {
+  constructor(args: { value: unknown; issues?: ReadonlyArray<ResultCodecIssue> }) {
     super({
-      message: `Failed to deserialize value as Result: expected { status: "ok", value } or { status: "error", error }`,
+      message: args.issues
+        ? "Failed to deserialize Result payload"
+        : `Failed to deserialize value as Result: expected { status: "ok", value } or { status: "error", error }`,
       value: args.value,
+      issues: args.issues,
+    });
+  }
+}
+
+/**
+ * Returned when a Result codec cannot serialize an Ok or Err payload.
+ *
+ * @example
+ * const result = UserResultCodec.serialize(Result.ok(value));
+ * if (Result.isError(result) && ResultSerializationError.is(result.error)) {
+ *   console.log("Invalid output:", result.error.value);
+ * }
+ */
+export class ResultSerializationError extends TaggedError("ResultSerializationError")<{
+  message: string;
+  value: unknown;
+  issues?: ReadonlyArray<ResultCodecIssue>;
+}> {
+  constructor(args: { value: unknown; issues?: ReadonlyArray<ResultCodecIssue> }) {
+    super({
+      message: "Failed to serialize Result payload",
+      value: args.value,
+      issues: args.issues,
     });
   }
 }

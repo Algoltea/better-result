@@ -527,63 +527,170 @@ new NetworkError({ url: "/api", status: 404 });
 
 ## Serialization
 
-Convert Results to plain objects for RPC, storage, or server actions:
+Build Result-level codecs for RPC, storage, or server actions with Standard Schema-compatible schemas. This example uses Zod, but any Standard Schema implementation works:
 
 ```ts
-import { Result, SerializedResult, ResultDeserializationError } from "better-result";
+import { z } from "zod";
+import {
+  Result,
+  ResultDeserializationError,
+  ResultSerializationError,
+  type Result as ResultType,
+  type SerializedResult,
+} from "better-result";
 
-// Serialize to plain object
-const result = Result.ok(42);
-const serialized = Result.serialize(result);
-// { status: "ok", value: 42 }
+const UserSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  createdAt: z.date(),
+});
+const UserWireSchema = z.object({
+  id: z.string(),
+  display_name: z.string(),
+  created_at_iso: z.string(),
+});
+const ValidationErrorSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+});
+const ValidationErrorWireSchema = z.object({
+  type: z.string(),
+  message: z.string(),
+});
+type UserWire = z.output<typeof UserWireSchema>;
+type ValidationErrorWire = z.output<typeof ValidationErrorWireSchema>;
 
-// Deserialize back to Result instance
-const deserialized = Result.deserialize<number, never>(serialized);
-// Ok(42) - can use .map(), .andThen(), etc.
+const UserResultCodec = Result.codec({
+  serialize: {
+    ok: UserSchema.transform((user) => ({
+      id: user.id,
+      display_name: user.name,
+      created_at_iso: user.createdAt.toISOString(),
+    })),
+    err: ValidationErrorSchema.transform((error) => ({
+      type: error.code,
+      message: error.message,
+    })),
+  },
+  deserialize: {
+    ok: UserWireSchema.transform((wire) => ({
+      id: wire.id,
+      name: wire.display_name,
+      createdAt: new Date(wire.created_at_iso),
+    })),
+    err: ValidationErrorWireSchema.transform((wire) => ({
+      code: wire.type,
+      message: wire.message,
+    })),
+  },
+});
 
-// Invalid input returns ResultDeserializationError
-const invalid = Result.deserialize({ foo: "bar" });
+const outbound = await UserResultCodec.serialize(Result.ok(user));
+// Ok({ status: "ok", value: { id, display_name, created_at_iso } })
+
+if (Result.isError(outbound) && ResultSerializationError.is(outbound.error)) {
+  console.log("Bad payload:", outbound.error.value, outbound.error.issues);
+}
+
+const inbound = await outbound.andThenAsync(async (wire) => {
+  return await UserResultCodec.deserialize(wire);
+});
+// Ok(user)
+
+const invalid = await UserResultCodec.deserialize({ foo: "bar" });
 if (Result.isError(invalid) && ResultDeserializationError.is(invalid.error)) {
-  console.log("Bad input:", invalid.error.value);
+  console.log("Bad envelope or payload:", invalid.error.value, invalid.error.issues);
 }
 
-// Typed boundary for Next.js server actions
-async function createUser(data: FormData): Promise<SerializedResult<User, ValidationError>> {
+async function createUser(
+  data: FormData,
+): Promise<ResultType<SerializedResult<UserWire, ValidationErrorWire>, ResultSerializationError>> {
   const result = await validateAndCreate(data);
-  return Result.serialize(result);
+  return UserResultCodec.serialize(result);
 }
-
-// Client-side
-const serialized = await createUser(formData);
-const result = Result.deserialize<User, ValidationError>(serialized);
 ```
+
+### Synchronous and asynchronous schemas
+
+Serialization and deserialization infer their return types independently. Within either direction, the selected `ok` or `err` schema determines whether a concrete branch returns a `Result` or a `Promise<Result>`—no runtime mode configuration is needed.
+
+```ts
+const serializedOk = MixedCodec.serialize(Result.ok(user)); // Result when serialize.ok is sync
+const serializedErr = MixedCodec.serialize(Result.err(error)); // Promise<Result> when serialize.err is async
+
+const deserializedOk = MixedCodec.deserialize({ status: "ok", value: userWire });
+const deserializedErr = MixedCodec.deserialize({ status: "error", error: errorWire });
+```
+
+When the input's branch is not statically known, mixed schemas honestly return `Result | Promise<Result>`. An `unknown` deserialization input also includes the synchronous `Result` case because an invalid outer envelope fails before a payload schema runs. `await` accepts both forms when callers want one control flow:
+
+```ts
+const decoded = await MixedCodec.deserialize(inputFromNetwork);
+```
+
+Schema validation issues are returned as `ResultSerializationError` or `ResultDeserializationError`. A schema that throws or returns a rejected Promise is a defect: the codec throws or rejects with `Panic` and preserves the original error as `cause`.
+
+JSON transports omit object properties whose value is `undefined`. The codec therefore accepts `{ status: "ok" }` and `{ status: "error" }` as envelopes and passes the missing payload to the selected deserialization schema as `undefined`. A `void` or `undefined` schema can accept it; schemas requiring another payload return `ResultDeserializationError` with their validation issues.
+
+### Migrating from `Result.serialize` / `Result.deserialize`
+
+`Result.serialize`, `Result.deserialize`, and `Result.hydrate` were removed in 3.0. The old helpers copied payloads without validating them:
+
+```ts
+// Before 3.0
+const wire = Result.serialize(result); // SerializedResult<User, ValidationError>
+const resultOrNull = Result.deserialize<User, ValidationError>(input); // Result | null
+```
+
+Create a codec once and let its schemas infer the payload types. For already serializable payloads, use the same validating schemas in both directions:
+
+```ts
+// 3.0
+const LegacyLikeCodec = Result.codec({
+  serialize: { ok: UserWireSchema, err: ValidationErrorWireSchema },
+  deserialize: { ok: UserWireSchema, err: ValidationErrorWireSchema },
+});
+
+const wirePayloadResult = Result.ok(userWire);
+const wireResult = await LegacyLikeCodec.serialize(wirePayloadResult);
+// Result<SerializedResult<UserWire, ValidationErrorWire>, ResultSerializationError>
+
+const decoded = await LegacyLikeCodec.deserialize(input);
+// Result<UserWire, ValidationErrorWire | ResultDeserializationError>
+```
+
+Migration differences:
+
+- Handle `ResultSerializationError` instead of assuming serialization always succeeds.
+- Handle `ResultDeserializationError` instead of checking for `null`; its `issues` preserve schema diagnostics when a payload is invalid.
+- Remove explicit `<User, ValidationError>` deserialization type arguments. The schemas provide those types.
+- Use `await` when a schema is async or when a schema library exposes a sync-or-async Standard Schema validator type.
 
 ## API Reference
 
 ### Result
 
-| Method                                  | Description                                                                              |
-| --------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `Result.ok(value)`                      | Create success                                                                           |
-| `Result.err(error)`                     | Create error                                                                             |
-| `Result.try(fn)`                        | Wrap throwing function                                                                   |
-| `Result.tryPromise(fn, config?)`        | Wrap async function with optional retry                                                  |
-| `Result.isOk(result)`                   | Type guard for Ok                                                                        |
-| `Result.isError(result)`                | Type guard for Err                                                                       |
-| `Result.gen(fn)`                        | Generator composition                                                                    |
-| `Result.tryRecover(result, fn)`         | Recover error into same success type                                                     |
-| `Result.tryRecoverAsync(result, fn)`    | Async recover error into same success type                                               |
-| `Result.tap(result, fn)`                | Run side effect on success and return original result                                    |
-| `Result.tapAsync(result, fn)`           | Run async side effect on success and return original result                              |
-| `Result.tapError(result, fn)`           | Run side effect on error and return original result                                      |
-| `Result.tapErrorAsync(result, fn)`      | Run async side effect on error and return original result                                |
-| `Result.tapBoth(result, handlers)`      | Run side effect on either branch and return original result                              |
-| `Result.tapBothAsync(result, handlers)` | Run async side effect on either branch and return original result                        |
-| `Result.await(promise)`                 | Wrap Promise<Result> for generators                                                      |
-| `Result.serialize(result)`              | Convert Result to plain object                                                           |
-| `Result.deserialize(value)`             | Rehydrate serialized Result (returns `Err<ResultDeserializationError>` on invalid input) |
-| `Result.partition(results)`             | Split array into [okValues, errValues]                                                   |
-| `Result.flatten(result)`                | Flatten nested Result                                                                    |
+| Method                                  | Description                                                                          |
+| --------------------------------------- | ------------------------------------------------------------------------------------ |
+| `Result.ok(value)`                      | Create success                                                                       |
+| `Result.err(error)`                     | Create error                                                                         |
+| `Result.try(fn)`                        | Wrap throwing function                                                               |
+| `Result.tryPromise(fn, config?)`        | Wrap async function with optional retry                                              |
+| `Result.isOk(result)`                   | Type guard for Ok                                                                    |
+| `Result.isError(result)`                | Type guard for Err                                                                   |
+| `Result.gen(fn)`                        | Generator composition                                                                |
+| `Result.tryRecover(result, fn)`         | Recover error into same success type                                                 |
+| `Result.tryRecoverAsync(result, fn)`    | Async recover error into same success type                                           |
+| `Result.tap(result, fn)`                | Run side effect on success and return original result                                |
+| `Result.tapAsync(result, fn)`           | Run async side effect on success and return original result                          |
+| `Result.tapError(result, fn)`           | Run side effect on error and return original result                                  |
+| `Result.tapErrorAsync(result, fn)`      | Run async side effect on error and return original result                            |
+| `Result.tapBoth(result, handlers)`      | Run side effect on either branch and return original result                          |
+| `Result.tapBothAsync(result, handlers)` | Run async side effect on either branch and return original result                    |
+| `Result.await(promise)`                 | Wrap Promise<Result> for generators                                                  |
+| `Result.codec(config)`                  | Build a Result-level codec from Standard Schema-compatible serializers/deserializers |
+| `Result.partition(results)`             | Split array into [okValues, errValues]                                               |
+| `Result.flatten(result)`                | Flatten nested Result                                                                |
 
 ### Instance Methods
 
