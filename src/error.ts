@@ -33,7 +33,7 @@ const isAnyTaggedError = (value: unknown): value is AnyTaggedError => {
  * class NotFoundError extends TaggedError("NotFoundError")<{
  *   id: string;
  *   message: string;
- * }>() {}
+ * }> {}
  *
  * const err = new NotFoundError({ id: "123", message: "Not found: 123" });
  * err._tag    // "NotFoundError"
@@ -43,71 +43,60 @@ const isAnyTaggedError = (value: unknown): value is AnyTaggedError => {
  * // Check if any tagged error
  * TaggedError.is(err) // true
  */
-export const TaggedError: {
-  <Tag extends string>(
-    tag: Tag,
-  ): <Props extends Record<string, unknown> = {}>() => TaggedErrorClass<Tag, Props>;
-  /** Type guard for any TaggedError instance */
-  is(value: unknown): value is AnyTaggedError;
-} = Object.assign(
-  <Tag extends string>(tag: Tag) =>
-    <Props extends Record<string, unknown> = {}>(): TaggedErrorClass<Tag, Props> => {
-      class Base extends Error {
-        readonly _tag: Tag = tag;
+export const TaggedError = <Tag extends string>(tag: Tag): TaggedErrorClass<Tag> => {
+  class Base<Props extends Record<string, unknown> = {}> extends Error {
+    readonly _tag: Tag = tag;
 
-        /** Type guard for this error class */
-        static is(value: unknown): value is Base {
-          return value instanceof Base;
-        }
+    constructor(args?: Props) {
+      const message =
+        args && "message" in args && typeof args.message === "string" ? args.message : undefined;
+      const cause = args && "cause" in args ? args.cause : undefined;
 
-        constructor(args?: Props) {
-          const message =
-            args && "message" in args && typeof args.message === "string"
-              ? args.message
-              : undefined;
-          const cause = args && "cause" in args ? args.cause : undefined;
+      super(message, cause !== undefined ? { cause } : undefined);
 
-          super(message, cause !== undefined ? { cause } : undefined);
-
-          if (args) {
-            Object.assign(this, args);
-          }
-
-          Object.setPrototypeOf(this, new.target.prototype);
-          this.name = tag;
-
-          if (cause instanceof Error && cause.stack) {
-            const indented = cause.stack.replace(/\n/g, "\n  ");
-            this.stack = `${this.stack}\nCaused by: ${indented}`;
-          }
-        }
-
-        toJSON(): object {
-          return {
-            ...this,
-            _tag: this._tag,
-            name: this.name,
-            message: this.message,
-            cause: serializeCause(this.cause),
-            stack: this.stack,
-          };
-        }
-
-        /**
-         * Makes this TaggedError yieldable in Result.gen blocks.
-         * Yielding short-circuits with this error, matching Err semantics.
-         */
-        *[Symbol.iterator](): Generator<Err<never, this>, never, unknown> {
-          yield* err(this);
-          return panic("Unreachable: Err yielded in TaggedError but generator continued", this);
-        }
+      if (args) {
+        Object.assign(this, args);
       }
 
-      // SAFETY: Cast needed for factory pattern - Props are assigned via Object.assign
-      return Base as unknown as TaggedErrorClass<Tag, Props>;
-    },
-  { is: isAnyTaggedError },
-);
+      Object.setPrototypeOf(this, new.target.prototype);
+      this.name = tag;
+
+      if (cause instanceof Error && cause.stack) {
+        const indented = cause.stack.replace(/\n/g, "\n  ");
+        this.stack = `${this.stack}\nCaused by: ${indented}`;
+      }
+    }
+
+    toJSON(): object {
+      return {
+        ...this,
+        _tag: this._tag,
+        name: this.name,
+        message: this.message,
+        cause: serializeCause(this.cause),
+        stack: this.stack,
+      };
+    }
+
+    /**
+     * Makes this TaggedError yieldable in Result.gen blocks.
+     * Yielding short-circuits with this error, matching Err semantics.
+     */
+    *[Symbol.iterator](): Generator<Err<never, this>, never, unknown> {
+      yield* err(this);
+      return panic("Unreachable: Err yielded in TaggedError but generator continued", this);
+    }
+
+    /** Type guard for the concrete error class on which this method is called. */
+    static is<C extends TaggedErrorConstructor>(this: C, value: unknown): value is InstanceType<C> {
+      return value instanceof this;
+    }
+  }
+
+  // SAFETY: Cast needed for factory pattern - Props are assigned via Object.assign
+  return Base as unknown as TaggedErrorClass<Tag>;
+};
+TaggedError.is = isAnyTaggedError;
 
 interface IterableError extends Error {
   /** Makes TaggedError instances yieldable in Result.gen blocks. */
@@ -120,13 +109,16 @@ export type TaggedErrorInstance<Tag extends string, Props> = IterableError & {
   toJSON(): object;
 } & Readonly<Props>;
 
+/** Constructor used to infer the concrete class for static TaggedError guards. */
+type TaggedErrorConstructor = abstract new (...args: never[]) => object;
+
 /** Class type produced by TaggedError factory */
-export type TaggedErrorClass<Tag extends string, Props> = {
-  new (
+export type TaggedErrorClass<Tag extends string> = {
+  new <Props extends Record<string, unknown> = {}>(
     ...args: keyof Props extends never ? [args?: {}] : [args: Props]
   ): TaggedErrorInstance<Tag, Props>;
-  /** Type guard for this error class */
-  is(value: unknown): value is TaggedErrorInstance<Tag, Props>;
+  /** Type guard for the concrete error class on which this method is called. */
+  is<C extends TaggedErrorConstructor>(this: C, value: unknown): value is InstanceType<C>;
 };
 
 /** Handler map for exhaustive matching */
@@ -220,7 +212,7 @@ export const isTaggedError = isAnyTaggedError;
 export class UnhandledException extends TaggedError("UnhandledException")<{
   message: string;
   cause: unknown;
-}>() {
+}> {
   constructor(args: { cause: unknown }) {
     const message =
       args.cause instanceof Error
@@ -242,7 +234,7 @@ export class UnhandledException extends TaggedError("UnhandledException")<{
 export class ResultDeserializationError extends TaggedError("ResultDeserializationError")<{
   message: string;
   value: unknown;
-}>() {
+}> {
   constructor(args: { value: unknown }) {
     super({
       message: `Failed to deserialize value as Result: expected { status: "ok", value } or { status: "error", error }`,
