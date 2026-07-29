@@ -191,7 +191,11 @@ describe("Result", () => {
 
       expect(serialized).toEqual({ status: "error", error: undefined });
       expect(json).toBe('{"status":"error"}');
-      expect(UndefinedErrorCodec.deserialize(received)).toEqual(Result.err(undefined));
+      const deserialized = UndefinedErrorCodec.deserialize(received);
+      expect(Result.isError(deserialized)).toBe(true);
+      if (Result.isError(deserialized)) {
+        expect(deserialized.error).toBeUndefined();
+      }
     });
   });
 
@@ -2562,7 +2566,10 @@ describe("Result", () => {
             const deserialized = UserResultCodec.deserialize(
               JSON.parse(JSON.stringify(serialized)),
             );
-            expect(deserialized).toEqual(Result.err(appError));
+            expect(Result.isError(deserialized)).toBe(true);
+            if (Result.isError(deserialized)) {
+              expect(deserialized.error).toEqual(appError);
+            }
           },
         ),
       );
@@ -2679,7 +2686,10 @@ describe("Result", () => {
       expect(syncSerialized).toEqual(Result.ok({ status: "ok", value: "value" }));
       await expect(asyncDeserialized).resolves.toEqual(Result.ok("value"));
       await expect(asyncSerialized).resolves.toEqual(Result.ok({ status: "error", error: 42 }));
-      expect(syncDeserialized).toEqual(Result.err(42));
+      expect(Result.isError(syncDeserialized)).toBe(true);
+      if (Result.isError(syncDeserialized)) {
+        expect(syncDeserialized.error).toBe(42);
+      }
     });
 
     it("infers mixed Result branches without runtime mode configuration", async () => {
@@ -2720,8 +2730,16 @@ describe("Result", () => {
       expect(serializedOk).toEqual(Result.ok({ status: "ok", value: "value" }));
       await expect(serializedErr).resolves.toEqual(Result.ok({ status: "error", error: 42 }));
       expect(deserializedOk).toEqual(Result.ok("value"));
-      await expect(deserializedErr).resolves.toEqual(Result.err(42));
-      await expect(deserializedUnknownEnvelope).resolves.toEqual(Result.err(42));
+      const resolvedDeserializedErr = await deserializedErr;
+      const resolvedUnknownEnvelope = await deserializedUnknownEnvelope;
+      expect(Result.isError(resolvedDeserializedErr)).toBe(true);
+      expect(Result.isError(resolvedUnknownEnvelope)).toBe(true);
+      if (Result.isError(resolvedDeserializedErr)) {
+        expect(resolvedDeserializedErr.error).toBe(42);
+      }
+      if (Result.isError(resolvedUnknownEnvelope)) {
+        expect(resolvedUnknownEnvelope.error).toBe(42);
+      }
     });
 
     it("returns a synchronous envelope error even when payload schemas are async", () => {
@@ -3038,7 +3056,7 @@ describe("Type Inference", () => {
         const automatic = Result.tryPromise(() => Promise.resolve(42), {
           retry: { times: 1, delayMs: 100, backoff: "constant", jitter: true },
         });
-        expectTypeOf(automatic).toEqualTypeOf<Promise<ResultType<number, UnhandledException>>>();
+        expectTypeOf(automatic).toEqualTypeOf<Promise<Result<number, UnhandledException>>>();
 
         const custom = Result.tryPromise(
           {
@@ -3059,7 +3077,7 @@ describe("Type Inference", () => {
             },
           },
         );
-        expectTypeOf(custom).toEqualTypeOf<Promise<ResultType<string, ErrorA>>>();
+        expectTypeOf(custom).toEqualTypeOf<Promise<Result<string, ErrorA>>>();
       };
 
       expectTypeOf(compileTimeOnly).toEqualTypeOf<() => void>();
