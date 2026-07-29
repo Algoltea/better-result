@@ -1,5 +1,5 @@
 import fc from "fast-check";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   Result,
   Ok,
@@ -688,6 +688,154 @@ describe("Result", () => {
       expect(attempts).toBe(3);
       // exponential: 10ms + 20ms = 30ms minimum
       expect(elapsed).toBeGreaterThanOrEqual(25);
+    });
+
+    describe("retry jitter", () => {
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      const recordRetryDelays = (): number[] => {
+        const delays: number[] = [];
+        const clearedTimeout = setTimeout(() => {}, 0);
+        clearTimeout(clearedTimeout);
+        vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, delay) => {
+          delays.push(delay ?? 0);
+          if (typeof handler === "function") handler();
+          return clearedTimeout;
+        });
+        return delays;
+      };
+
+      it.each([true, 1] as const)(
+        "applies full jitter for %s without exceeding the base delay",
+        async (jitter) => {
+          const delays = recordRetryDelays();
+          vi.spyOn(Math, "random").mockReturnValue(0.25);
+          let attempts = 0;
+
+          const pending = Result.tryPromise(
+            () => {
+              attempts++;
+              return attempts === 1
+                ? Promise.reject(new Error("fail"))
+                : Promise.resolve("success");
+            },
+            { retry: { times: 1, delayMs: 100, backoff: "constant", jitter } },
+          );
+
+          await expect(pending).resolves.toMatchObject({ status: "ok", value: "success" });
+          expect(attempts).toBe(2);
+          expect(delays).toEqual([25]);
+        },
+      );
+
+      it.each([
+        { random: 0, expectedDelay: 0 },
+        { random: 0.999_999, expectedDelay: 99.999_9 },
+      ])(
+        "keeps full jitter within its lower and upper bounds for random=$random",
+        async ({ random, expectedDelay }) => {
+          const delays = recordRetryDelays();
+          vi.spyOn(Math, "random").mockReturnValue(random);
+          let attempts = 0;
+
+          const pending = Result.tryPromise(
+            () => {
+              attempts++;
+              return attempts === 1
+                ? Promise.reject(new Error("fail"))
+                : Promise.resolve("success");
+            },
+            { retry: { times: 1, delayMs: 100, backoff: "constant", jitter: true } },
+          );
+
+          await expect(pending).resolves.toMatchObject({ status: "ok", value: "success" });
+          expect(delays).toHaveLength(1);
+          expect(delays[0]).toBeCloseTo(expectedDelay, 8);
+        },
+      );
+
+      it("uses a numeric jitter factor as the maximum delay reduction", async () => {
+        const delays = recordRetryDelays();
+        vi.spyOn(Math, "random").mockReturnValue(0.5);
+        let attempts = 0;
+
+        const pending = Result.tryPromise(
+          () => {
+            attempts++;
+            return attempts === 1 ? Promise.reject(new Error("fail")) : Promise.resolve("success");
+          },
+          { retry: { times: 1, delayMs: 100, backoff: "constant", jitter: 0.5 } },
+        );
+
+        await expect(pending).resolves.toMatchObject({ status: "ok", value: "success" });
+        expect(attempts).toBe(2);
+        expect(delays).toEqual([75]);
+      });
+
+      it.each([
+        { backoff: "constant" as const, expectedDelays: [50, 50, 50] },
+        { backoff: "linear" as const, expectedDelays: [50, 100, 150] },
+        { backoff: "exponential" as const, expectedDelays: [50, 100, 200] },
+      ])("applies jitter after $backoff backoff", async ({ backoff, expectedDelays }) => {
+        const delays = recordRetryDelays();
+        const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+        let attempts = 0;
+
+        const pending = Result.tryPromise(
+          () => {
+            attempts++;
+            return attempts <= 3 ? Promise.reject(new Error("fail")) : Promise.resolve("success");
+          },
+          { retry: { times: 3, delayMs: 100, backoff, jitter: true } },
+        );
+
+        await expect(pending).resolves.toMatchObject({ status: "ok", value: "success" });
+        expect(attempts).toBe(4);
+        expect(delays).toEqual(expectedDelays);
+        expect(random).toHaveBeenCalledTimes(3);
+      });
+
+      it.each([false, 0] as const)("disables jitter for %s", async (jitter) => {
+        const delays = recordRetryDelays();
+        const random = vi.spyOn(Math, "random");
+        let attempts = 0;
+
+        const pending = Result.tryPromise(
+          () => {
+            attempts++;
+            return attempts === 1 ? Promise.reject(new Error("fail")) : Promise.resolve("success");
+          },
+          { retry: { times: 1, delayMs: 100, backoff: "constant", jitter } },
+        );
+
+        await expect(pending).resolves.toMatchObject({ status: "ok", value: "success" });
+        expect(attempts).toBe(2);
+        expect(delays).toEqual([100]);
+        expect(random).not.toHaveBeenCalled();
+      });
+
+      it.each([-0.1, 1.1, Number.NaN, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY])(
+        "panics before execution when jitter is outside [0, 1]: %s",
+        async (jitter) => {
+          let attempts = 0;
+
+          const pending = Result.tryPromise(
+            () => {
+              attempts++;
+              return Promise.resolve("success");
+            },
+            { retry: { times: 1, delayMs: 100, backoff: "constant", jitter } },
+          );
+
+          await expect(pending).rejects.toBeInstanceOf(Panic);
+          await expect(pending).rejects.toThrow(
+            "Result.tryPromise retry jitter must be a finite number between 0 and 1",
+          );
+          expect(attempts).toBe(0);
+        },
+      );
     });
 
     it("passes 1-based attempt context to function overload", async () => {
@@ -2810,6 +2958,74 @@ describe("Type Inference", () => {
   class ErrorC extends Error {
     readonly _tag = "ErrorC" as const;
   }
+
+  describe("tryPromise retry jitter config", () => {
+    it("preserves return and callback inference through both overloads", () => {
+      const compileTimeOnly = () => {
+        const automatic = Result.tryPromise(() => Promise.resolve(42), {
+          retry: { times: 1, delayMs: 100, backoff: "constant", jitter: true },
+        });
+        expectTypeOf(automatic).toEqualTypeOf<Promise<ResultType<number, UnhandledException>>>();
+
+        const custom = Result.tryPromise(
+          {
+            try: () => Promise.resolve("success"),
+            catch: () => new ErrorA(),
+          },
+          {
+            retry: {
+              times: 1,
+              delayMs: 100,
+              backoff: "exponential",
+              jitter: 0.5,
+              shouldRetry: (error, context) => {
+                expectTypeOf(error).toEqualTypeOf<ErrorA>();
+                expectTypeOf(context).toEqualTypeOf<TryPromiseContext>();
+                return true;
+              },
+            },
+          },
+        );
+        expectTypeOf(custom).toEqualTypeOf<Promise<ResultType<string, ErrorA>>>();
+      };
+
+      expectTypeOf(compileTimeOnly).toEqualTypeOf<() => void>();
+    });
+
+    it("rejects unsupported jitter config types", () => {
+      const compileTimeOnly = () => {
+        // @ts-expect-error jitter accepts only booleans and numbers.
+        Result.tryPromise(() => Promise.resolve(42), {
+          retry: {
+            times: 1,
+            delayMs: 100,
+            backoff: "constant",
+            jitter: "full",
+          },
+        });
+        // @ts-expect-error null does not disable jitter; use false or omit the field.
+        Result.tryPromise(() => Promise.resolve(42), {
+          retry: {
+            times: 1,
+            delayMs: 100,
+            backoff: "constant",
+            jitter: null,
+          },
+        });
+        // @ts-expect-error jitter does not accept an options object.
+        Result.tryPromise(() => Promise.resolve(42), {
+          retry: {
+            times: 1,
+            delayMs: 100,
+            backoff: "constant",
+            jitter: { factor: 0.5 },
+          },
+        });
+      };
+
+      expectTypeOf(compileTimeOnly).toEqualTypeOf<() => void>();
+    });
+  });
 
   describe("Result instance callback inference", () => {
     type Expect<T extends true> = T;
