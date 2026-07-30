@@ -1,0 +1,3 @@
+# Preserve the legacy MitlaFly introduction URL indexed by search engines.
+/introduction / 301
+/introduction/ / 301
