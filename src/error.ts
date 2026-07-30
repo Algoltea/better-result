@@ -13,6 +13,13 @@ const serializeCause = (cause: unknown): unknown => {
 /** Tagged error-like value (for generic constraints). */
 type TaggedErrorLike = Error & { readonly _tag: string };
 
+/** Candidate properties accepted by TaggedError before reserved names are excluded. */
+type TaggedErrorProps = Record<string, unknown>;
+
+/** Rejects TaggedError properties that collide with the built-in match method. */
+type TaggedErrorPropsWithoutReservedNames<Props extends TaggedErrorProps> =
+  "match" extends keyof Props ? never : Props;
+
 /** Any TaggedError instance. */
 export type AnyTaggedError = TaggedErrorLike & { toJSON(): object };
 
@@ -36,6 +43,9 @@ const isAnyTaggedError = (value: unknown): value is AnyTaggedError => {
  *   message: string;
  * }> {}
  *
+ * The `match` property name is reserved for exhaustive instance matching and cannot be declared
+ * in `Props`.
+ *
  * const err = new NotFoundError({ id: "123", message: "Not found: 123" });
  * err._tag    // "NotFoundError"
  * err.id      // "123"
@@ -45,7 +55,7 @@ const isAnyTaggedError = (value: unknown): value is AnyTaggedError => {
  * TaggedError.is(err) // true
  */
 export const TaggedError = <Tag extends string>(tag: Tag): TaggedErrorClass<Tag> => {
-  class Base<Props extends Record<string, unknown> = {}> extends Error {
+  class Base<Props extends TaggedErrorProps = {}> extends Error {
     readonly _tag: Tag = tag;
 
     constructor(args?: Props) {
@@ -80,6 +90,20 @@ export const TaggedError = <Tag extends string>(tag: Tag): TaggedErrorClass<Tag>
     }
 
     /**
+     * Exhaustively matches a tagged error union and returns the selected handler's result.
+     * @throws {Panic} If the selected handler throws.
+     */
+    match<E extends TaggedErrorLike, const H extends MatchHandlers<E>>(
+      this: E,
+      handlers: H,
+    ): MatchReturn<H>;
+    /** Exhaustively matches a tagged error union while constraining every handler to return `R`. */
+    match<E extends TaggedErrorLike, R>(this: E, handlers: MatchHandlersWithReturn<E, R>): R;
+    match<E extends TaggedErrorLike>(this: E, handlers: MatchHandlers<E>): unknown {
+      return matchError(this, handlers);
+    }
+
+    /**
      * Makes this TaggedError yieldable in Result.gen blocks.
      * Yielding short-circuits with this error, matching Err semantics.
      */
@@ -99,13 +123,24 @@ export const TaggedError = <Tag extends string>(tag: Tag): TaggedErrorClass<Tag>
 };
 TaggedError.is = isAnyTaggedError;
 
-interface IterableError extends Error {
+interface TaggedErrorMethods extends Error {
+  /**
+   * Exhaustively matches a tagged error union and returns the selected handler's result.
+   * @throws {Panic} If the selected handler throws.
+   */
+  match<E extends TaggedErrorLike, const H extends MatchHandlers<E>>(
+    this: E,
+    handlers: H,
+  ): MatchReturn<H>;
+  /** Exhaustively matches a tagged error union while constraining every handler to return `R`. */
+  match<E extends TaggedErrorLike, R>(this: E, handlers: MatchHandlersWithReturn<E, R>): R;
+
   /** Makes TaggedError instances yieldable in Result.gen blocks. */
   [Symbol.iterator](): Generator<Err<never, this>, never, unknown>;
 }
 
 /** Instance type produced by TaggedError factory */
-export type TaggedErrorInstance<Tag extends string, Props> = IterableError & {
+export type TaggedErrorInstance<Tag extends string, Props> = TaggedErrorMethods & {
   readonly _tag: Tag;
   toJSON(): object;
 } & Readonly<Props>;
@@ -115,9 +150,11 @@ type TaggedErrorConstructor = abstract new (...args: never[]) => object;
 
 /** Class type produced by TaggedError factory */
 export type TaggedErrorClass<Tag extends string> = {
-  new <Props extends Record<string, unknown> = {}>(
-    ...args: keyof Props extends never ? [args?: {}] : [args: Props]
-  ): TaggedErrorInstance<Tag, Props>;
+  new <Props extends TaggedErrorProps = {}>(
+    ...args: keyof Props extends never
+      ? [args?: {}]
+      : [args: TaggedErrorPropsWithoutReservedNames<Props>]
+  ): TaggedErrorInstance<Tag, TaggedErrorPropsWithoutReservedNames<Props>>;
   /** Type guard for the concrete error class on which this method is called. */
   is<C extends TaggedErrorConstructor>(this: C, value: unknown): value is InstanceType<C>;
 };
@@ -173,6 +210,8 @@ type UnhandledMatchErrors<E extends TaggedErrorLike, H> = Exclude<E, { _tag: Han
  *   NotFoundError: (e) => `Missing: ${e.id}`,
  *   ValidationError: (e) => `Invalid: ${e.field}`,
  * }));
+ *
+ * @throws {Panic} If the selected handler throws.
  */
 export const matchError: {
   /** Data-last, E deferred to application; returns the union of handler returns */
@@ -187,8 +226,12 @@ export const matchError: {
   <E extends TaggedErrorLike, R>(err: E, handlers: MatchHandlersWithReturn<E, R>): R;
 } = dual(2, <E extends TaggedErrorLike>(err: E, handlers: MatchHandlers<E>): unknown => {
   const handler = handlers[err._tag as E["_tag"]];
-  // SAFETY: exhaustiveness is enforced at the type level
-  return handler(err as Extract<E, { _tag: (typeof err)["_tag"] }>);
+  try {
+    // SAFETY: exhaustiveness is enforced at the type level
+    return handler(err as Extract<E, { _tag: (typeof err)["_tag"] }>);
+  } catch (cause) {
+    return panic("matchError handler threw", cause);
+  }
 });
 
 const returnTaggedErrorIdentity = (error: TaggedErrorLike): TaggedErrorLike => error;

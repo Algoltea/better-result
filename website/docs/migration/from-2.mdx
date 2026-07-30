@@ -59,6 +59,25 @@ const output = matchErrorPartial(error, {
 // 404 | unhandled error variants
 ```
 
+## TaggedError instance matching
+
+Tagged errors can now match their union directly. This is additive; existing `matchError` calls remain valid.
+
+```ts
+const response = result.match({
+  ok: (user) => ({ status: 200, body: user }),
+  err: (error) =>
+    error.match({
+      UserNotFound: () => ({ status: 404, body: null }),
+      DatabaseUnavailable: () => ({ status: 503, body: null }),
+    }),
+});
+```
+
+Use `matchError` for structurally tagged errors or data-last matching. Both exhaustive forms turn a selected handler exception into `Panic` and preserve the exception as `cause`.
+
+`match` is now a reserved TaggedError instance name. TypeScript rejects payload properties and incompatible subclass members with that name; rename any collision during migration.
+
 ## Collection additions
 
 - `Result.all` preserves tuple success types and returns the first error.
