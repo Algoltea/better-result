@@ -99,7 +99,7 @@ Result.map((x) => x + 1)(result); // Pipeable
 // Transform error type
 const result = fetchUser(id).mapError((e) => new AppError(`Failed to fetch user: ${e.message}`));
 
-// Recover from specific errors while preserving the same success type
+// Recover from specific errors, widening the success type when needed
 const result = fetchUser(id).tryRecover((e) =>
   e._tag === "NotFoundError" ? Result.ok(defaultUser) : Result.err(e),
 );
@@ -532,11 +532,16 @@ const transformError = matchErrorPartial({
 const piped = transformError(error);
 // string | ValidationError
 
-// A custom fallback can transform unhandled errors
+// A custom onUnhandled callback can transform unhandled errors
 const message = matchErrorPartial(
   error,
   { NotFoundError: (e) => `Missing: ${e.id}` },
   (e) => `Unknown: ${e.message}`,
+);
+
+// Result.err preserves unhandled variants when composing with tryRecover
+const recovered = result.tryRecover(
+  matchErrorPartial({ NotFoundError: (e: NotFoundError) => Result.ok(defaultValue) }, Result.err),
 );
 
 // Type guards
@@ -742,8 +747,8 @@ Migration differences:
 | `Result.isOk(result)`                   | Type guard for Ok                                                                     |
 | `Result.isError(result)`                | Type guard for Err                                                                    |
 | `Result.gen(fn)`                        | Generator composition                                                                 |
-| `Result.tryRecover(result, fn)`         | Recover error into same success type                                                  |
-| `Result.tryRecoverAsync(result, fn)`    | Async recover error into same success type                                            |
+| `Result.tryRecover(result, fn)`         | Recover error, widening the success type when needed                                  |
+| `Result.tryRecoverAsync(result, fn)`    | Async recover error, widening the success type when needed                            |
 | `Result.tap(result, fn)`                | Run side effect on success and return original result                                 |
 | `Result.tapAsync(result, fn)`           | Run async side effect on success and return original result                           |
 | `Result.tapError(result, fn)`           | Run side effect on error and return original result                                   |
@@ -760,37 +765,37 @@ Migration differences:
 
 ### Instance Methods
 
-| Method                    | Description                                |
-| ------------------------- | ------------------------------------------ |
-| `.isOk()`                 | Type guard, narrows to Ok                  |
-| `.isErr()`                | Type guard, narrows to Err                 |
-| `.map(fn)`                | Transform success value                    |
-| `.mapError(fn)`           | Transform error value                      |
-| `.tryRecover(fn)`         | Recover error into same success type       |
-| `.tryRecoverAsync(fn)`    | Async recover error into same success type |
-| `.andThen(fn)`            | Chain Result-returning function            |
-| `.andThenAsync(fn)`       | Chain async Result-returning function      |
-| `.match({ ok, err })`     | Pattern match                              |
-| `.unwrap(message?)`       | Extract value or throw                     |
-| `.unwrapOr(fallback)`     | Extract value or return fallback           |
-| `.tap(fn)`                | Side effect on success                     |
-| `.tapAsync(fn)`           | Async side effect on success               |
-| `.tapError(fn)`           | Side effect on error                       |
-| `.tapErrorAsync(fn)`      | Async side effect on error                 |
-| `.tapBoth(handlers)`      | Side effect on either branch               |
-| `.tapBothAsync(handlers)` | Async side effect on either branch         |
+| Method                    | Description                                       |
+| ------------------------- | ------------------------------------------------- |
+| `.isOk()`                 | Type guard, narrows to Ok                         |
+| `.isErr()`                | Type guard, narrows to Err                        |
+| `.map(fn)`                | Transform success value                           |
+| `.mapError(fn)`           | Transform error value                             |
+| `.tryRecover(fn)`         | Recover error and widen success when needed       |
+| `.tryRecoverAsync(fn)`    | Async recover error and widen success when needed |
+| `.andThen(fn)`            | Chain Result-returning function                   |
+| `.andThenAsync(fn)`       | Chain async Result-returning function             |
+| `.match({ ok, err })`     | Pattern match                                     |
+| `.unwrap(message?)`       | Extract value or throw                            |
+| `.unwrapOr(fallback)`     | Extract value or return fallback                  |
+| `.tap(fn)`                | Side effect on success                            |
+| `.tapAsync(fn)`           | Async side effect on success                      |
+| `.tapError(fn)`           | Side effect on error                              |
+| `.tapErrorAsync(fn)`      | Async side effect on error                        |
+| `.tapBoth(handlers)`      | Side effect on either branch                      |
+| `.tapBothAsync(handlers)` | Async side effect on either branch                |
 
 ### TaggedError
 
-| Method                                  | Description                                             |
-| --------------------------------------- | ------------------------------------------------------- |
-| `TaggedError(tag)<Props>()`             | Factory for tagged error class                          |
-| `TaggedError.is(value)`                 | Type guard for any TaggedError                          |
-| `matchError(err, handlers)`             | Exhaustive pattern match by `_tag`                      |
-| `matchErrorPartial(err, handlers, fb?)` | Partial match; unhandled errors pass through by default |
-| `isTaggedError(value)`                  | Type guard (standalone function)                        |
-| `panic(message, cause?)`                | Throw unrecoverable Panic                               |
-| `isPanic(value)`                        | Type guard for Panic                                    |
+| Method                                             | Description                                             |
+| -------------------------------------------------- | ------------------------------------------------------- |
+| `TaggedError(tag)<Props>()`                        | Factory for tagged error class                          |
+| `TaggedError.is(value)`                            | Type guard for any TaggedError                          |
+| `matchError(err, handlers)`                        | Exhaustive pattern match by `_tag`                      |
+| `matchErrorPartial(error, handlers, onUnhandled?)` | Partial match; unhandled errors pass through by default |
+| `isTaggedError(value)`                             | Type guard (standalone function)                        |
+| `panic(message, cause?)`                           | Throw unrecoverable Panic                               |
+| `isPanic(value)`                                   | Type guard for Panic                                    |
 
 ### Type Helpers
 

@@ -102,7 +102,7 @@ class TimestampedError extends TaggedError("TimestampedError")<{
 | v1                                                  | v2                                                |
 | --------------------------------------------------- | ------------------------------------------------- |
 | `TaggedError.match(err, handlers)`                  | `matchError(err, handlers)`                       |
-| `TaggedError.matchPartial(err, handlers, fallback)` | `matchErrorPartial(err, handlers, fallback)`      |
+| `TaggedError.matchPartial(err, handlers, fallback)` | `matchErrorPartial(error, handlers, onUnhandled)` |
 | `TaggedError.isTaggedError(value)`                  | `isTaggedError(value)` or `TaggedError.is(value)` |
 
 ## Import Migration

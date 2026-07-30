@@ -42,7 +42,7 @@ TaggedError.isTaggedError(value)
 
 ```typescript
 matchError(error, { ... })
-matchErrorPartial(error, { ... }, fallback)
+matchErrorPartial(error, { ... }, onUnhandled)
 isTaggedError(value)
 ```
 

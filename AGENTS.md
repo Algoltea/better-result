@@ -32,7 +32,7 @@ better-result/
 | Add static combinator | `src/result.ts:782`        | `Result` namespace object                  |
 | New error type        | `src/error.ts`             | Extend `TaggedError`, add `_tag`           |
 | Change exports        | `src/index.ts`             | Barrel file                                |
-| Add tests             | `src/*.test.ts`            | Colocated, Bun test runner                 |
+| Add tests             | `src/*.test.ts`            | Colocated, Vitest runner                   |
 | Update agent skills   | `skills/*/SKILL.md`        | Keep `name:` matching the directory name   |
 | Add skill references  | `skills/*/references/*.md` | Prefer linked references over giant skills |
 
@@ -56,7 +56,7 @@ better-result/
 
 - **Strict TypeScript**: `noUncheckedIndexedAccess`, full strict mode
 - **ESM only**: No CommonJS (`"type": "module"`)
-- **Bun runtime**: `bun test`, `bun run build`
+- **Bun toolchain**: Use `bun run test` for Vitest and `bun run build` for packaging
 - **Phantom types**: `Ok<A, E>` and `Err<T, E>` both carry phantom type for the other variant
 - **Dual API**: All combinators support both `fn(result, arg)` and `fn(arg)(result)`
 - **Ox toolchain**: `oxlint` for linting, `oxfmt` for formatting (Rust-based, fast)
@@ -106,9 +106,9 @@ const result = await Result.gen(async function* () {
 ## TEST PATTERNS
 
 - **Colocated**: `*.test.ts` in `src/` alongside implementation
-- **Bun test**: Native `bun:test` with `describe`/`it`/`expect`
+- **Vitest runtime tests**: Import `describe`/`it`/`expect` from `vitest` in `*.test.ts`
+- **Vitest type tests**: Use `expectTypeOf` in `*.test-d.ts`; `bun run test` runs them with `tsc`
 - **Law verification**: Explicit Functor/Monad law tests
-- **Type tests**: Compile-time type inference verification
 - **Custom errors**: Per-file test error classes with `_tag`
 
 ## COMMANDS
@@ -116,7 +116,8 @@ const result = await Result.gen(async function* () {
 ```bash
 bun run build     # tsdown compilation
 bun run check     # Type-check only (--noEmit)
-bun test          # Run tests
+bun run test      # Run Vitest runtime and type tests
+bun run test:watch # Run Vitest in watch mode
 bun run lint      # oxlint
 bun run fmt       # oxfmt format
 bun run fmt:check # oxfmt check

@@ -120,13 +120,21 @@ const transformed = matchErrorPartial(error, {
 // string | ValidationError | AuthError
 ```
 
-Provide a custom fallback to transform the remaining errors:
+Provide a custom `onUnhandled` callback to transform the remaining errors:
 
 ```typescript
 const message = matchErrorPartial(
   error,
   { NotFoundError: (e) => `Missing: ${e.id}` },
-  (e) => `Error: ${e.message}`, // fallback for ValidationError, AuthError
+  (e) => `Error: ${e.message}`, // Handles ValidationError and AuthError
+);
+```
+
+Use `Result.err` as the pipeable `onUnhandled` callback to preserve unhandled variants during recovery:
+
+```typescript
+const recovered = result.tryRecover(
+  matchErrorPartial({ NotFoundError: (e: NotFoundError) => Result.ok(defaultValue) }, Result.err),
 );
 ```
 

@@ -1,5 +1,5 @@
 import { describe, expectTypeOf, it } from "vitest";
-import { matchError, matchErrorPartial, type Ok, Result, TaggedError } from "./index";
+import { type Err, matchError, matchErrorPartial, type Ok, Result, TaggedError } from "./index";
 
 class ErrorA extends TaggedError("ErrorA")<{}> {}
 class ErrorB extends TaggedError("ErrorB")<{}> {}
@@ -357,8 +357,8 @@ describe("matchErrorPartial", () => {
     expectTypeOf(outcome).toEqualTypeOf<"A" | "fallback">();
   });
 
-  it("fallback error is accessible in data-last form without contextual E", () => {
-    // Should NOT produce `never` — fallback param must be accessible even when
+  it("onUnhandled error is accessible in data-last form without contextual E", () => {
+    // Should NOT produce `never` — the onUnhandled parameter must be accessible even when
     // E is deferred (no contextual error type at matchErrorPartial call site).
     const matcher = matchErrorPartial(
       {
@@ -366,11 +366,42 @@ describe("matchErrorPartial", () => {
       },
       (e) => {
         expectTypeOf(e._tag).toBeString();
-        return "fallback" as const;
+        return "onUnhandled" as const;
       },
     );
     const result = Result.err<void, ErrorA | ErrorB>(new ErrorA());
     const outcome = matcher(result.error);
-    expectTypeOf(outcome).toEqualTypeOf<"A" | "fallback">();
+    expectTypeOf(outcome).toEqualTypeOf<"A" | "onUnhandled">();
+  });
+
+  it("preserves unhandled errors when the pipeable onUnhandled callback is Result.err", () => {
+    type ApiError = ErrorA | ErrorB | ErrorC;
+    const getError = (): ApiError => new ErrorA();
+    const matcher = matchErrorPartial(
+      {
+        ErrorC: (handled: ErrorC) => Result.ok(handled),
+      },
+      Result.err,
+    );
+
+    const outcome = matcher(getError());
+
+    expectTypeOf(outcome).toEqualTypeOf<Ok<ErrorC, never> | Err<never, ErrorA | ErrorB>>();
+  });
+
+  it("composes a Result.err onUnhandled callback with widening tryRecover", () => {
+    type ApiError = ErrorA | ErrorB | ErrorC;
+    const getResult = (): Result<string, ApiError> => Result.err(new ErrorA());
+
+    const recovered = getResult().tryRecover(
+      matchErrorPartial(
+        {
+          ErrorC: (handled: ErrorC) => Result.ok(handled),
+        },
+        Result.err,
+      ),
+    );
+
+    expectTypeOf(recovered).toEqualTypeOf<Result<string | ErrorC, ErrorA | ErrorB>>();
   });
 });

@@ -3306,6 +3306,11 @@ describe("Type Inference", () => {
         const recovered = myResult.tryRecover<ErrorB>(() => Result.err(new ErrorB()));
         expectTypeOf(recovered).toEqualTypeOf<Result<{ name: string }, ErrorB>>();
 
+        const recoveredWithWidening = myResult.tryRecover<ErrorB, number>(() => Result.ok(1));
+        expectTypeOf(recoveredWithWidening).toEqualTypeOf<
+          Result<{ name: string } | number, ErrorB>
+        >();
+
         const chainedAsync = myResult.andThenAsync<string, ErrorB>(async (value) =>
           Result.ok<string, ErrorB>(value.name),
         );
@@ -3335,6 +3340,12 @@ describe("Type Inference", () => {
 
         const errMappedError = errDirect.mapError((error) => error._tag);
         expectTypeOf(errMappedError).toEqualTypeOf<Err<string, "ErrorA">>();
+
+        const okRecovered = okDirect.tryRecover(() => Result.ok(123));
+        expectTypeOf(okRecovered).toEqualTypeOf<Ok<string, never>>();
+
+        const errRecovered = errDirect.tryRecover(() => Result.ok(123));
+        expectTypeOf(errRecovered).toEqualTypeOf<Result<number, never>>();
       };
 
       expect(typeof compileTimeOnly).toBe("function");
@@ -3417,7 +3428,7 @@ describe("Type Inference", () => {
     });
   });
 
-  describe("tryRecover type preservation", () => {
+  describe("tryRecover type inference", () => {
     it("preserves success type while allowing error type change", () => {
       const r: Result<number, ErrorA> = Result.err(new ErrorA());
 
@@ -3476,33 +3487,28 @@ describe("Type Inference", () => {
       expect(dataLastOk.unwrap()).toBe(0);
     });
 
-    it("does not allow the success channel to change", () => {
-      const r: Result<string, ErrorA> = Result.err(new ErrorA());
+    it("widens the success channel", () => {
+      const getString = (): Result<string, ErrorA> => Result.err(new ErrorA());
+      const r = getString();
 
-      const compileTimeOnly = () => {
-        // @ts-expect-error tryRecover matches Gleam semantics: it may change E, not T.
-        r.tryRecover(() => Result.ok(123));
+      const methodResult = r.tryRecover(() => Result.ok(123));
+      const dataFirst = Result.tryRecover(r, () => Result.ok(123));
+      const unannotatedErr = Result.tryRecover(Result.err(new ErrorA()), () => Result.ok(123));
+      const recoverNumber = Result.tryRecover((_: ErrorA) => Result.ok(123));
+      const dataLast = recoverNumber(r);
 
-        // @ts-expect-error data-first tryRecover may not map the success channel.
-        Result.tryRecover(r, () => Result.ok(123));
-
-        // @ts-expect-error an unannotated Err has success type never; the callback cannot infer it.
-        Result.tryRecover(Result.err(new ErrorA()), () => Result.ok(123));
-
-        const recoverNumber = Result.tryRecover((_: ErrorA) => Result.ok(123));
-        const okString: Result<string, ErrorA> = Result.ok("ok");
-        // @ts-expect-error data-last tryRecover is fixed to the callback success type.
-        recoverNumber(okString);
-      };
-      expect(typeof compileTimeOnly).toBe("function");
-
-      const recovered = r.tryRecover(() => Result.ok("fallback"));
-      expectTypeOf(recovered).toEqualTypeOf<Result<string, never>>();
-      expect(recovered.unwrap()).toBe("fallback");
+      expectTypeOf(methodResult).toEqualTypeOf<Result<string | number, never>>();
+      expectTypeOf(dataFirst).toEqualTypeOf<Result<string | number, never>>();
+      expectTypeOf(unannotatedErr).toEqualTypeOf<Result<number, never>>();
+      expectTypeOf(dataLast).toEqualTypeOf<Result<string | number, never>>();
+      expect(methodResult.unwrap()).toBe(123);
+      expect(dataFirst.unwrap()).toBe(123);
+      expect(unannotatedErr.unwrap()).toBe(123);
+      expect(dataLast.unwrap()).toBe(123);
     });
   });
 
-  describe("tryRecoverAsync type preservation", () => {
+  describe("tryRecoverAsync type inference", () => {
     it("preserves success type while allowing error type change", async () => {
       const r: Result<number, ErrorA> = Result.err(new ErrorA());
 
@@ -3561,29 +3567,26 @@ describe("Type Inference", () => {
       expect(dataLastOk.unwrap()).toBe(0);
     });
 
-    it("does not allow the success channel to change", async () => {
-      const r: Result<string, ErrorA> = Result.err(new ErrorA());
+    it("widens the success channel", async () => {
+      const getString = (): Result<string, ErrorA> => Result.err(new ErrorA());
+      const r = getString();
 
-      const compileTimeOnly = () => {
-        // @ts-expect-error tryRecoverAsync matches Gleam semantics: it may change E, not T.
-        r.tryRecoverAsync(async () => Result.ok(123));
+      const methodResult = await r.tryRecoverAsync(async () => Result.ok(123));
+      const dataFirst = await Result.tryRecoverAsync(r, async () => Result.ok(123));
+      const unannotatedErr = await Result.tryRecoverAsync(Result.err(new ErrorA()), async () =>
+        Result.ok(123),
+      );
+      const recoverNumber = Result.tryRecoverAsync(async (_: ErrorA) => Result.ok(123));
+      const dataLast = await recoverNumber(r);
 
-        // @ts-expect-error data-first tryRecoverAsync may not map the success channel.
-        Result.tryRecoverAsync(r, async () => Result.ok(123));
-
-        // @ts-expect-error an unannotated Err has success type never; the callback cannot infer it.
-        Result.tryRecoverAsync(Result.err(new ErrorA()), async () => Result.ok(123));
-
-        const recoverNumber = Result.tryRecoverAsync(async (_: ErrorA) => Result.ok(123));
-        const okString: Result<string, ErrorA> = Result.ok("ok");
-        // @ts-expect-error data-last tryRecoverAsync is fixed to the callback success type.
-        recoverNumber(okString);
-      };
-      expect(typeof compileTimeOnly).toBe("function");
-
-      const recovered = await r.tryRecoverAsync(async () => Result.ok("fallback"));
-      expectTypeOf(recovered).toEqualTypeOf<Result<string, never>>();
-      expect(recovered.unwrap()).toBe("fallback");
+      expectTypeOf(methodResult).toEqualTypeOf<Result<string | number, never>>();
+      expectTypeOf(dataFirst).toEqualTypeOf<Result<string | number, never>>();
+      expectTypeOf(unannotatedErr).toEqualTypeOf<Result<number, never>>();
+      expectTypeOf(dataLast).toEqualTypeOf<Result<string | number, never>>();
+      expect(methodResult.unwrap()).toBe(123);
+      expect(dataFirst.unwrap()).toBe(123);
+      expect(unannotatedErr.unwrap()).toBe(123);
+      expect(dataLast.unwrap()).toBe(123);
     });
   });
 

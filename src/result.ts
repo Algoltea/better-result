@@ -55,8 +55,6 @@ const tryOrPanic = <T>(fn: () => T, message: string): T => {
  */
 type InferYieldErr<Y> = Y extends Err<never, infer E> ? E : never;
 
-type NoInfer<T> = [T][T extends unknown ? 0 : never];
-
 const tryFn: {
   <A, E>(
     options: { try: (context: TryContext) => Awaited<A>; catch: (cause: unknown) => Awaited<E> },
@@ -286,12 +284,12 @@ const mapError: {
 });
 
 const tryRecover: {
-  <A, E, E2>(result: Result<A, E>, fn: (e: E) => Result<NoInfer<A>, E2>): Result<A, E2>;
+  <A, E, E2, B = A>(result: Result<A, E>, fn: (e: E) => Result<B, E2>): Result<A | B, E2>;
   <E, E2>(fn: (e: E) => Result<never, E2>): <A>(result: Result<A, E>) => Result<A, E2>;
-  <E, A, E2>(fn: (e: E) => Result<A, E2>): (result: Result<A, E>) => Result<A, E2>;
+  <E, B, E2>(fn: (e: E) => Result<B, E2>): <A>(result: Result<A, E>) => Result<A | B, E2>;
 } = dual(
   2,
-  <A, E, E2>(result: Result<A, E>, fn: (e: E) => Result<NoInfer<A>, E2>): Result<A, E2> => {
+  <A, E, E2, B = A>(result: Result<A, E>, fn: (e: E) => Result<B, E2>): Result<A | B, E2> => {
     return result.tryRecover(fn);
   },
 );
@@ -304,22 +302,22 @@ const andThen: {
 });
 
 const tryRecoverAsync: {
-  <A, E, E2>(
+  <A, E, E2, B = A>(
     result: Result<A, E>,
-    fn: (e: E) => Promise<Result<NoInfer<A>, E2>>,
-  ): Promise<Result<A, E2>>;
+    fn: (e: E) => Promise<Result<B, E2>>,
+  ): Promise<Result<A | B, E2>>;
   <E, E2>(
     fn: (e: E) => Promise<Result<never, E2>>,
   ): <A>(result: Result<A, E>) => Promise<Result<A, E2>>;
-  <E, A, E2>(
-    fn: (e: E) => Promise<Result<A, E2>>,
-  ): (result: Result<A, E>) => Promise<Result<A, E2>>;
+  <E, B, E2>(
+    fn: (e: E) => Promise<Result<B, E2>>,
+  ): <A>(result: Result<A, E>) => Promise<Result<A | B, E2>>;
 } = dual(
   2,
-  <A, E, E2>(
+  <A, E, E2, B = A>(
     result: Result<A, E>,
-    fn: (e: E) => Promise<Result<NoInfer<A>, E2>>,
-  ): Promise<Result<A, E2>> => {
+    fn: (e: E) => Promise<Result<B, E2>>,
+  ): Promise<Result<A | B, E2>> => {
     return result.tryRecoverAsync(fn);
   },
 );
@@ -1087,7 +1085,7 @@ export const Result = {
    */
   mapError,
   /**
-   * Attempts to recover from an error into the same success type.
+   * Recovers from an error, widening the success type when recovery returns a new type.
    *
    * @example
    * Result.tryRecover(err("fail"), e => ok(e.length)) // Ok(4)
@@ -1102,7 +1100,7 @@ export const Result = {
    */
   andThen,
   /**
-   * Attempts to recover from an error into the same success type asynchronously.
+   * Recovers from an error asynchronously, widening success when recovery returns a new type.
    *
    * @example
    * await Result.tryRecoverAsync(err("fail"), async e => ok(e.length)) // Ok(4)

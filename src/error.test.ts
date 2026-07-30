@@ -367,6 +367,25 @@ describe("TaggedError", () => {
       expect(matchWithIdentity(unhandled)).toBe(unhandled);
     });
 
+    it("wraps unhandled errors when Result.err is the pipeable onUnhandled callback", () => {
+      const recoverNotFound = matchErrorPartial(
+        {
+          NotFoundError: (error: NotFoundError) => Result.ok(error.id),
+        },
+        Result.err,
+      );
+      const handled = new NotFoundError({ id: "123", message: "not found" });
+      const unhandled = new ValidationError({ field: "email", message: "invalid" });
+
+      expect(recoverNotFound(handled).unwrap()).toBe("123");
+
+      const unhandledResult = recoverNotFound(unhandled);
+      expect(Result.isError(unhandledResult)).toBe(true);
+      if (Result.isError(unhandledResult)) {
+        expect(unhandledResult.error).toBe(unhandled);
+      }
+    });
+
     it("is identity for an empty handler map", () => {
       const error: AppError = new NetworkError({
         url: "https://api.example.com",

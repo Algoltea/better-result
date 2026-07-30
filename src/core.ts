@@ -6,9 +6,6 @@ const serializeCause = (cause: unknown): unknown => {
   return cause;
 };
 
-/** Prevents inference from a type position while supporting TypeScript 5.0. */
-type NoInfer<T> = [T][T extends unknown ? 0 : never];
-
 /**
  * Unrecoverable error — user code threw inside Result operations.
  *
@@ -110,10 +107,6 @@ export type TapBothAsyncErrHandlers<E> = {
   err: (e: E) => Promise<void>;
 };
 
-/** Extracts the success type carried by either Result variant, including Err's phantom T. */
-type InferSuccess<R> =
-  R extends Ok<infer T, unknown> ? T : R extends Err<infer T, unknown> ? T : never;
-
 /** Detects whether a type is a union. */
 type IsUnion<T, U = T> = T extends unknown ? ([U] extends [T] ? false : true) : never;
 
@@ -137,14 +130,14 @@ type MapErrorReturn<R, E2> =
         ? Err<T, E2>
         : never;
 
-/** Return type for recovery that preserves concrete variants but prints public Result for Result unions. */
-type TryRecoverReturn<R, E2> =
+/** Return type for recovery that widens success unions while preserving concrete variant precision. */
+type TryRecoverReturn<R, B, E2> =
   IsUnion<R> extends true
-    ? Result<InferOk<R>, E2>
+    ? Result<InferOk<R> | B, E2>
     : R extends Ok<infer A, unknown>
       ? Ok<A, E2>
-      : R extends Err<infer T, unknown>
-        ? Result<T, E2>
+      : R extends Err<unknown, unknown>
+        ? Result<B, E2>
         : never;
 
 /** Return type for andThen that preserves concrete variants but prints public Result for Result unions. */
@@ -227,44 +220,46 @@ export class Ok<A, E = never> {
   }
 
   /**
-   * No-op on Ok, returns self with new phantom error type.
+   * No-op on Ok, returning the existing success without calling the recovery function.
    *
    * @template E2 New error type.
-   * @param _fn Ignored.
+   * @template B Additional success type returned by the recovery function.
+   * @param _fn Ignored recovery function.
    * @returns Self with updated phantom E type.
    *
    * @example
    * ok(42).tryRecover(() => err("fallback")) // Ok(42)
    */
-  tryRecover<E2>(this: Ok<A, E>, _fn: (e: never) => Result<NoInfer<A>, E2>): Ok<A, E2>;
-  tryRecover<E2, R extends AnyResult = Result<A, E>>(
+  tryRecover<E2, B = A>(this: Ok<A, E>, _fn: (e: never) => Result<B, E2>): Ok<A, E2>;
+  tryRecover<E2, B = A, R extends AnyResult = Result<A, E>>(
     this: R,
-    _fn: (e: InferErr<R>) => Result<NoInfer<InferSuccess<R>>, E2>,
-  ): TryRecoverReturn<R, E2>;
-  tryRecover<E2>(_fn: (e: never) => Result<NoInfer<A>, E2>): Ok<A, E2> {
+    _fn: (e: InferErr<R>) => Result<B, E2>,
+  ): TryRecoverReturn<R, B, E2>;
+  tryRecover<E2, B = A>(_fn: (e: never) => Result<B, E2>): Ok<A, E2> {
     // SAFETY: E is phantom on Ok (not used at runtime).
     return this as unknown as Ok<A, E2>;
   }
 
   /**
-   * No-op on Ok, returns Promise of self with new phantom error type.
+   * No-op on Ok, asynchronously returning the existing success without calling recovery.
    *
    * @template E2 New error type.
-   * @param _fn Ignored.
+   * @template B Additional success type returned by the recovery function.
+   * @param _fn Ignored async recovery function.
    * @returns Promise of self with updated phantom E type.
    *
    * @example
    * await ok(42).tryRecoverAsync(async () => err("fallback")) // Ok(42)
    */
-  tryRecoverAsync<E2>(
+  tryRecoverAsync<E2, B = A>(
     this: Ok<A, E>,
-    _fn: (e: never) => Promise<Result<NoInfer<A>, E2>>,
+    _fn: (e: never) => Promise<Result<B, E2>>,
   ): Promise<Ok<A, E2>>;
-  tryRecoverAsync<E2, R extends AnyResult = Result<A, E>>(
+  tryRecoverAsync<E2, B = A, R extends AnyResult = Result<A, E>>(
     this: R,
-    _fn: (e: InferErr<R>) => Promise<Result<NoInfer<InferSuccess<R>>, E2>>,
-  ): Promise<TryRecoverReturn<R, E2>>;
-  tryRecoverAsync<E2>(_fn: (e: never) => Promise<Result<NoInfer<A>, E2>>): Promise<Ok<A, E2>> {
+    _fn: (e: InferErr<R>) => Promise<Result<B, E2>>,
+  ): Promise<TryRecoverReturn<R, B, E2>>;
+  tryRecoverAsync<E2, B = A>(_fn: (e: never) => Promise<Result<B, E2>>): Promise<Ok<A, E2>> {
     // SAFETY: E is phantom on Ok (not used at runtime).
     return Promise.resolve(this as unknown as Ok<A, E2>);
   }
@@ -535,45 +530,47 @@ export class Err<T, E> {
   }
 
   /**
-   * Attempts to recover from Err into the same success type.
+   * Attempts to recover from Err, allowing the recovery to return a new success type.
    *
    * @template E2 New error type.
-   * @param fn Recovery function returning Result with the same success type.
+   * @template B Success type returned by the recovery function.
+   * @param fn Recovery function returning a Result.
    * @returns Result from fn.
    * @throws {Panic} If fn throws.
    *
    * @example
-   * err<number, string>("missing").tryRecover(e => e === "missing" ? ok(0) : err(new Error(e))) // Ok(0)
+   * err<number, string>("missing").tryRecover(e => e === "missing" ? ok("fallback") : err(new Error(e))) // Ok("fallback")
    */
-  tryRecover<E2>(this: Err<T, E>, fn: (e: E) => Result<NoInfer<T>, E2>): Result<T, E2>;
-  tryRecover<E2, R extends AnyResult = Result<T, E>>(
+  tryRecover<E2, B = T>(this: Err<T, E>, fn: (e: E) => Result<B, E2>): Result<B, E2>;
+  tryRecover<E2, B = T, R extends AnyResult = Result<T, E>>(
     this: R,
-    fn: (e: InferErr<R>) => Result<NoInfer<InferSuccess<R>>, E2>,
-  ): TryRecoverReturn<R, E2>;
-  tryRecover<E2>(fn: (e: E) => Result<NoInfer<T>, E2>): Result<T, E2> {
+    fn: (e: InferErr<R>) => Result<B, E2>,
+  ): TryRecoverReturn<R, B, E2>;
+  tryRecover<E2, B = T>(fn: (e: E) => Result<B, E2>): Result<B, E2> {
     return tryOrPanic(() => fn(this.error), "tryRecover callback threw");
   }
 
   /**
-   * Attempts to recover from Err into the same success type asynchronously.
+   * Attempts to recover from Err asynchronously, allowing a new success type.
    *
    * @template E2 New error type.
-   * @param fn Async recovery function returning Result with the same success type.
+   * @template B Success type returned by the recovery function.
+   * @param fn Async recovery function returning a Result.
    * @returns Promise of Result from fn.
    * @throws {Panic} If fn throws synchronously or rejects.
    *
    * @example
-   * await err<number, string>("missing").tryRecoverAsync(async e => e === "missing" ? ok(0) : err(new Error(e))) // Ok(0)
+   * await err<number, string>("missing").tryRecoverAsync(async e => e === "missing" ? ok("fallback") : err(new Error(e))) // Ok("fallback")
    */
-  tryRecoverAsync<E2>(
+  tryRecoverAsync<E2, B = T>(
     this: Err<T, E>,
-    fn: (e: E) => Promise<Result<NoInfer<T>, E2>>,
-  ): Promise<Result<T, E2>>;
-  tryRecoverAsync<E2, R extends AnyResult = Result<T, E>>(
+    fn: (e: E) => Promise<Result<B, E2>>,
+  ): Promise<Result<B, E2>>;
+  tryRecoverAsync<E2, B = T, R extends AnyResult = Result<T, E>>(
     this: R,
-    fn: (e: InferErr<R>) => Promise<Result<NoInfer<InferSuccess<R>>, E2>>,
-  ): Promise<TryRecoverReturn<R, E2>>;
-  tryRecoverAsync<E2>(fn: (e: E) => Promise<Result<NoInfer<T>, E2>>): Promise<Result<T, E2>> {
+    fn: (e: InferErr<R>) => Promise<Result<B, E2>>,
+  ): Promise<TryRecoverReturn<R, B, E2>>;
+  tryRecoverAsync<E2, B = T>(fn: (e: E) => Promise<Result<B, E2>>): Promise<Result<B, E2>> {
     return tryOrPanicAsync(() => fn(this.error), "tryRecoverAsync callback threw");
   }
 

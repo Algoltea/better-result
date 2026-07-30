@@ -39,7 +39,8 @@
   "scripts": {
     "build": "tsdown",
     "prepublishOnly": "bun run build",
-    "test": "vitest --typecheck --run",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "check": "tsc --noEmit",
     "lint": "oxlint .",
     "fmt": "oxfmt .",
