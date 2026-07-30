@@ -15,12 +15,12 @@ Search production code and tests for:
 
 ```sh
 rg -n --glob '*.{ts,tsx,mts,cts}' \
-  'TaggedError|Result\.(serialize|deserialize|hydrate|tryRecover|tryRecoverAsync|tryPromise|partition)|matchError(Partial)?|TaggedErrorClass|Serialized(Result|Ok|Err)'
+  'TaggedError|Result\.(serialize|deserialize|hydrate|tryRecover|tryRecoverAsync|tryPromise|partition|gen)|matchError(Partial)?|TaggedErrorClass|Serialized(Result|Ok|Err)'
 ```
 
-Classify every hit under the audited API changes in [references/v3-api-diff.md](references/v3-api-diff.md). Record generated or vendored hits separately rather than editing them.
+Classify every hit under the audited API changes in [references/v3-api-diff.md](references/v3-api-diff.md). Include tests that structurally compare a `Result` containing a tagged error; tagged errors become iterable in v3 even though the `Result.gen` signature is unchanged. Record generated or vendored hits separately rather than editing them.
 
-**Complete when:** the installed source version, target 3.0 API, validation commands, and every matching production/test site are accounted for by file and migration branch.
+**Complete when:** the installed source version, target 3.0 API, validation commands, every matching production/test site, and every tagged-error Result assertion are accounted for by file and migration branch.
 
 ## 2. Apply the TaggedError codemod
 
@@ -51,11 +51,11 @@ It preserves constructors, properties, formatting, and call sites. Manually upda
 
 ## 3. Replace removed serialization helpers
 
-If the inventory contains `Result.serialize`, `Result.deserialize`, or `Result.hydrate`, follow [references/result-codec-migration.md](references/result-codec-migration.md). Design codecs at each transport or persistence boundary instead of creating one unvalidated global compatibility shim.
+If the inventory contains `Result.serialize`, `Result.deserialize`, or `Result.hydrate`, follow [references/result-codec-migration.md](references/result-codec-migration.md). The owning codec validates one application contract: a method's actual Ok and Err payloads in both directions. Share schema fragments, factories, and error-policy helpers across codecs; keep distinct success contracts in distinct named codecs.
 
 Account for changed control flow: serialization can now return `ResultSerializationError`; deserialization adds `ResultDeserializationError`; sync/async schemas determine whether codec operations return a `Result` or `Promise<Result>`.
 
-**Complete when:** every removed-helper call has an owning codec with schemas for both Result branches, and every codec error and async return is handled at its boundary.
+**Complete when:** every removed-helper call has a method- or boundary-specific codec with four payload schemas, every wire Err is reconstructed as the intended domain error, and every codec error and async return is handled at its boundary.
 
 ## 4. Reconcile changed inference and optional APIs
 
@@ -66,6 +66,7 @@ Type-check after the mechanical and codec changes. Resolve diagnostics using [re
 - `matchErrorPartial` may omit its fallback; an unhandled tagged error is then returned unchanged.
 - `Result.partition` now supports heterogeneous inputs; `all`, `allAsync`, and `partitionAsync` are new.
 - `Result.tryPromise` adds abort context, dynamic delays, and jitter while retaining valid v2 static retry configurations.
+- Tagged errors are iterable for direct `yield*` in `Result.gen`. Replace structural deep-equality assertions over tagged errors with separate Result-status and error identity/field assertions.
 
 Keep existing runtime behavior unless the user requested adoption of a new 3.0 capability. Prefer accurate widened types and explicit narrowing over casts.
 
@@ -73,8 +74,10 @@ Keep existing runtime behavior unless the user requested adoption of a new 3.0 c
 
 ## 5. Upgrade and prove the migration
 
-Update the direct dependency and lockfile to the requested stable or prerelease 3.0 version. Run formatting, lint, type-check, tests, and build commands required by the repository. Repeat the inventory search and the codemod check.
+Update the direct dependency and lockfile to the exact requested stable or prerelease 3.0 version. Keep that version fixed while diagnosing migration behavior.
+
+Run one targeted migrated test first. Read the package script and package-manager argument-passthrough rules, then verify the runner's collected-file output contains only the intended test files. Run formatting, lint, type-check, the full test suite, and build commands required by the repository. Repeat the inventory search and the codemod check. Preserve unrelated files when a repository-wide formatter reports pre-existing failures.
 
 Report the version change, files migrated by branch, codec/error-handling decisions, adopted optional features, and validation evidence.
 
-**Complete when:** no removed API or v2 TaggedError syntax remains outside recorded generated/vendor code, all inventoried sites are closed, and every repository check passes or has a concrete reported failure.
+**Complete when:** the targeted run exercised only its intended files, no removed API or v2 TaggedError syntax remains outside recorded generated/vendor code, all inventoried sites are closed, the requested version is still installed, and every repository check passes or has a concrete reported failure.

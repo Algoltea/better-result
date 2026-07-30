@@ -37,6 +37,30 @@ class NotFoundError extends HttpError<{ resource: string; message: string }> {}
 
 The plain envelope types `SerializedResult`, `SerializedOk`, and `SerializedErr` remain exported. They describe wire shapes; they do not validate or hydrate unknown values.
 
+## Runtime behavior to review
+
+### Tagged errors are iterable
+
+Tagged error instances implement `Symbol.iterator` in v3 so they can short-circuit directly inside `Result.gen`:
+
+```ts
+const user = yield * new UserNotFoundError({ id });
+```
+
+This is migration-relevant even though the `Result.gen` signature did not change. Structural deep-equality matchers may inspect the iterable error and advance its generator; Vitest can then trigger `Unreachable: Err yielded in Result.gen but generator continued` while comparing otherwise-correct Results.
+
+Assert the Result branch first, then compare tagged errors by identity or selected fields:
+
+```ts
+expect(result.status).toBe("error");
+if (Result.isError(result)) {
+  expect(result.error).toBe(expectedError);
+  expect(result.error._tag).toBe("UserNotFoundError");
+}
+```
+
+Apply this to assertions over tagged errors and Results containing them; keep structural equality for plain non-iterable payloads.
+
 ## Inference changes to review
 
 ### Recovery may widen success
