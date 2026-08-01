@@ -55,6 +55,22 @@ const decoded = await UserResultCodec.deserialize(inputFromNetwork);
 
 An invalid envelope or payload returns `ResultDeserializationError`. Its `value` is the invalid input; schema failures also include `issues`.
 
+## Unsafe convenience methods
+
+When you own both producer and consumer and version their schemas together, the unsafe variants are often the simpler choice. A codec validation error then usually means the shared contract is broken, so the unsafe methods remove the codec-error handling layer and its associated unwrapping or translation boilerplate:
+
+```ts
+const envelope = await UserResultCodec.serializeUnsafe(Result.ok(user));
+// SerializedResult<UserWire, ErrorWire>
+
+const decoded = await UserResultCodec.deserializeUnsafe(inputFromNetwork);
+// Result<User, DomainError>
+```
+
+`serializeUnsafe` unwraps the serialization Result and panics on `ResultSerializationError`. `deserializeUnsafe` panics only on `ResultDeserializationError`; a valid serialized Err remains a decoded domain Err. Both preserve the selected schema's synchronous or asynchronous behavior.
+
+Use the safe methods for public, independently versioned, persisted, or otherwise untrusted boundaries where contract mismatch is an expected condition that the caller should handle.
+
 ## Sync and async schemas
 
 Each selected schema controls whether that operation returns `Result`, `Promise<Result>`, or a union when the branch is unknown. `await` accepts both and is the simplest uniform boundary style:

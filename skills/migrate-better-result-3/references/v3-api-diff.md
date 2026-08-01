@@ -127,7 +127,7 @@ No annotation is needed for `error` when the enclosing Result retains its error 
 
 ### Validated codecs and errors
 
-- `Result.codec(config)`
+- `Result.codec(config)`, including `serializeUnsafe` for unwrapped envelopes and `deserializeUnsafe` for decoded Results without `ResultDeserializationError`; both opt into `Panic` for codec validation errors
 - `ResultSerializationError`
 - `ResultDeserializationError` now optionally carries Standard Schema `issues`
 - `ResultCodec`, `ResultCodecConfig`, `ResultCodecIssue`, and Standard Schema helper types

@@ -68,7 +68,15 @@ if (Result.isError(encoded)) {
 await transport.send(encoded.value);
 ```
 
-Throwing is appropriate only where outbound contract defects previously rejected the RPC or write. If the boundary already returns typed infrastructure failures, translate `ResultSerializationError` into that type instead. Centralize this policy in a typed helper when many producers use the same behavior; pass each method's named codec result into the helper.
+Throwing is appropriate only where outbound contract defects previously rejected the RPC or write. Use `serializeUnsafe` for that policy instead of manually throwing or unwrapping:
+
+```ts
+const envelope = await UserResultCodec.serializeUnsafe(result);
+// SerializedResult<UserWire, ValidationErrorWire>
+await transport.send(envelope);
+```
+
+If the boundary already returns typed infrastructure failures, keep `serialize` and translate `ResultSerializationError` into that type instead. Centralize this policy in a typed helper when many producers use the same behavior; pass each method's named codec result into the helper.
 
 ## 4. Replace deserialization and hydration
 
@@ -104,7 +112,14 @@ if (Result.isError(decoded) && ResultDeserializationError.is(decoded.error)) {
 return decoded; // Ok payload or reconstructed remote domain Err.
 ```
 
-A shared inbound helper may perform this malformed-payload translation, but it must preserve the codec's method-specific Ok type and domain Err union.
+A shared inbound helper may perform this malformed-payload translation, but it must preserve the codec's method-specific Ok type and domain Err union. If malformed inbound data is an unrecoverable defect at this boundary, `deserializeUnsafe` removes only the codec error variant:
+
+```ts
+const decoded = await GetQueueResultCodec.deserializeUnsafe(input);
+// Result<SongQueue, RemoteValidationError>
+```
+
+A valid serialized Err remains `Err<RemoteValidationError>`; only `ResultDeserializationError` becomes `Panic`.
 
 ## 5. Preserve honest sync/async behavior
 
@@ -112,8 +127,10 @@ Each selected schema determines whether that branch's operation returns `Result`
 
 A schema that reports issues yields `ResultSerializationError` or `ResultDeserializationError`. A schema that throws or rejects is a defect and becomes `Panic`; preserve the repository's defect reporting behavior.
 
+When the application owns both producer and consumer, versions their schemas together, and treats contract mismatch as an unrecoverable defect, prefer `serializeUnsafe` and `deserializeUnsafe`. They remove the extra codec-error handling, unwrapping, and translation layer from each call site. `serializeUnsafe` panics on `ResultSerializationError`. `deserializeUnsafe` panics on `ResultDeserializationError` while preserving a valid decoded domain Err. Keep `serialize` and `deserialize` for public, independently versioned, persisted, or otherwise untrusted boundaries where malformed data is expected and recoverable.
+
 JSON omits properties with `undefined` values. A codec accepts `{ status: "ok" }` or `{ status: "error" }` and passes `undefined` to the selected deserialization schema. Use a schema that accepts `undefined` for `void`/`undefined` payloads; other schemas correctly return `ResultDeserializationError`.
 
 ## Completion check
 
-The serialization branch is complete when every old helper call is gone; each distinct method/boundary contract has four validating schemas; shared factories and helpers preserve method-specific types; wire errors become domain error instances; codec failures follow explicit producer and consumer policies; and async behavior is reflected in callers and tests.
+The serialization branch is complete when every old helper call is gone; each distinct method/boundary contract has four validating schemas; shared factories and helpers preserve method-specific types; wire errors become domain error instances; codec failures follow explicit typed-error or unsafe-Panic producer and consumer policies; unsafe deserialization preserves valid domain Err values; and async behavior is reflected in callers and tests.

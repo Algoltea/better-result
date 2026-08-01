@@ -40,7 +40,7 @@ const CustomerResultCodec = Result.codec({
 });
 ```
 
-Verify exact APIs against the installed version. Codec serialization can return `ResultSerializationError`; deserialization can return `ResultDeserializationError`. Add both to the boundary's handling design. Schema implementations that throw or reject are defects and surface as `Panic`.
+Verify exact APIs against the installed version. Codec serialization can return `ResultSerializationError`; deserialization can return `ResultDeserializationError`. Add both to the boundary's handling design. When the application owns both producer and consumer, versions their schemas together, and treats contract mismatch as a defect, prefer `serializeUnsafe` and `deserializeUnsafe` to remove the codec-error handling and translation layer. `serializeUnsafe` panics instead of returning `ResultSerializationError`; `deserializeUnsafe` panics only on `ResultDeserializationError` and preserves valid decoded domain Err values. Keep the safe methods for public, independently versioned, persisted, or otherwise untrusted boundaries. Schema implementations that throw or reject are defects and surface as `Panic`.
 
 ## Audit both sides
 

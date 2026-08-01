@@ -87,4 +87,11 @@ const codec = Result.codec({
 });
 ```
 
+| Method                    | Behavior                                                               |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `codec.serialize`         | Validate an outbound Result and return a Result containing an envelope |
+| `codec.serializeUnsafe`   | Return the envelope or throw `Panic` on serialization failure          |
+| `codec.deserialize`       | Validate an envelope and return the decoded Result                     |
+| `codec.deserializeUnsafe` | Return the decoded Result or throw `Panic` on deserialization failure  |
+
 See [Result codecs](/serialization/result-codecs) for sync/async inference and error behavior.

@@ -19,7 +19,8 @@ If `.map()` silently converted every thrown callback into `Err<unknown>`, `Resul
 - a retry predicate or dynamic delay throws;
 - retry jitter is invalid;
 - an input Promise to `allAsync` or `partitionAsync` rejects;
-- a codec schema throws or rejects instead of returning validation issues.
+- a codec schema throws or rejects instead of returning validation issues;
+- `serializeUnsafe` receives `ResultSerializationError`, or `deserializeUnsafe` receives `ResultDeserializationError`.
 
 ## Detect and report
 

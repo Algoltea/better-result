@@ -36,7 +36,7 @@ const encoded = await codec.serialize(result);
 const decoded = await codec.deserialize(input);
 ```
 
-Handle `ResultSerializationError` and `ResultDeserializationError`. Schema async behavior controls operation async behavior.
+Handle `ResultSerializationError` and `ResultDeserializationError`. Schema async behavior controls operation async behavior. When you own both producer and consumer, version their schemas together, and treat contract mismatch as a defect, `serializeUnsafe` and `deserializeUnsafe` remove the codec-error handling layer and throw `Panic` instead. A valid decoded Err remains a domain Err. Keep safe methods at public, independently versioned, persisted, or otherwise untrusted boundaries.
 
 ## Recovery can widen success
 

@@ -608,6 +608,23 @@ type SerializedCodecOperationResult<
         >
       : never;
 
+type SerializedCodecUnsafeOperationResult<
+  TResult extends Result<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>,
+  TOkSerialize extends StandardSchemaV1,
+  TErrSerialize extends StandardSchemaV1,
+> =
+  TResult extends Ok<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>
+    ? StandardSchemaOperationResult<
+        SerializedResult<StandardSchemaOutput<TOkSerialize>, StandardSchemaOutput<TErrSerialize>>,
+        TOkSerialize
+      >
+    : TResult extends Err<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>
+      ? StandardSchemaOperationResult<
+          SerializedResult<StandardSchemaOutput<TOkSerialize>, StandardSchemaOutput<TErrSerialize>>,
+          TErrSerialize
+        >
+      : never;
+
 type DeserializedCodecResult<
   TOkDeserialize extends StandardSchemaV1,
   TErrDeserialize extends StandardSchemaV1,
@@ -627,6 +644,25 @@ type UnknownDeserializationResult<
     >
   | StandardSchemaOperationResult<
       DeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+      TErrDeserialize
+    >;
+
+type UnsafeDeserializedCodecResult<
+  TOkDeserialize extends StandardSchemaV1,
+  TErrDeserialize extends StandardSchemaV1,
+> = Result<StandardSchemaOutput<TOkDeserialize>, StandardSchemaOutput<TErrDeserialize>>;
+
+type UnknownUnsafeDeserializationResult<
+  TOkDeserialize extends StandardSchemaV1,
+  TErrDeserialize extends StandardSchemaV1,
+> =
+  | UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>
+  | StandardSchemaOperationResult<
+      UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+      TOkDeserialize
+    >
+  | StandardSchemaOperationResult<
+      UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
       TErrDeserialize
     >;
 
@@ -666,6 +702,12 @@ export interface ResultCodec<
   >(
     result: TResult,
   ) => SerializedCodecOperationResult<TResult, TOkSerialize, TErrSerialize>;
+  /** Serializes and unwraps the envelope, throwing Panic instead of returning a serialization error. */
+  readonly serializeUnsafe: <
+    TResult extends Result<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>,
+  >(
+    result: TResult,
+  ) => SerializedCodecUnsafeOperationResult<TResult, TOkSerialize, TErrSerialize>;
   /** Deserializes a known branch precisely, including status-only envelopes produced when JSON omits undefined payloads. */
   readonly deserialize: {
     (
@@ -681,6 +723,22 @@ export interface ResultCodec<
       TErrDeserialize
     >;
     (value: unknown): UnknownDeserializationResult<TOkDeserialize, TErrDeserialize>;
+  };
+  /** Deserializes a Result while throwing Panic instead of returning a deserialization error. */
+  readonly deserializeUnsafe: {
+    (
+      value: SerializedOkEnvelope,
+    ): StandardSchemaOperationResult<
+      UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+      TOkDeserialize
+    >;
+    (
+      value: SerializedErrEnvelope,
+    ): StandardSchemaOperationResult<
+      UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+      TErrDeserialize
+    >;
+    (value: unknown): UnknownUnsafeDeserializationResult<TOkDeserialize, TErrDeserialize>;
   };
 }
 
@@ -774,6 +832,41 @@ const deserializeWithSchema = <TSchema extends StandardSchemaV1>(
   );
 };
 
+/** Unwraps a synchronous or asynchronous codec Result while preserving its operation mode. */
+const unwrapCodecOperation = <T, E>(
+  operation: Result<T, E> | PromiseLike<Result<T, E>>,
+  panicMessage: string,
+): T | Promise<T> => {
+  if (isPromiseLike(operation)) {
+    return Promise.resolve(operation).then((result) => result.unwrap(panicMessage));
+  }
+  return operation.unwrap(panicMessage);
+};
+
+/** Removes deserialization errors from a codec Result by turning only that error into Panic. */
+const unwrapCodecDeserializationError = <T, E>(
+  operation:
+    | Result<T, E | ResultDeserializationError>
+    | PromiseLike<Result<T, E | ResultDeserializationError>>,
+): Result<T, E> | Promise<Result<T, E>> => {
+  const preserveDecodedResult = (
+    result: Result<T, E | ResultDeserializationError>,
+  ): Result<T, E> => {
+    if (result.status === "ok") {
+      return ok(result.value);
+    }
+    if (ResultDeserializationError.is(result.error)) {
+      return result.unwrap("Result.codec deserializeUnsafe failed");
+    }
+    return err(result.error);
+  };
+
+  if (isPromiseLike(operation)) {
+    return Promise.resolve(operation).then(preserveDecodedResult);
+  }
+  return preserveDecodedResult(operation);
+};
+
 const codec = <
   TOkSerialize extends StandardSchemaV1,
   TErrSerialize extends StandardSchemaV1,
@@ -863,9 +956,47 @@ const codec = <
       : finishErrDeserialization(deserialized);
   }
 
+  function serializeUnsafeResult<TResult extends InputResult>(
+    result: TResult,
+  ): SerializedCodecUnsafeOperationResult<TResult, TOkSerialize, TErrSerialize>;
+  function serializeUnsafeResult(
+    result: InputResult,
+  ):
+    | SerializedResult<StandardSchemaOutput<TOkSerialize>, StandardSchemaOutput<TErrSerialize>>
+    | Promise<
+        SerializedResult<StandardSchemaOutput<TOkSerialize>, StandardSchemaOutput<TErrSerialize>>
+      > {
+    return unwrapCodecOperation(serializeResult(result), "Result.codec serializeUnsafe failed");
+  }
+
+  function deserializeUnsafeResult(
+    value: SerializedOkEnvelope,
+  ): StandardSchemaOperationResult<
+    UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+    TOkDeserialize
+  >;
+  function deserializeUnsafeResult(
+    value: SerializedErrEnvelope,
+  ): StandardSchemaOperationResult<
+    UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>,
+    TErrDeserialize
+  >;
+  function deserializeUnsafeResult(
+    value: unknown,
+  ): UnknownUnsafeDeserializationResult<TOkDeserialize, TErrDeserialize>;
+  function deserializeUnsafeResult(
+    value: unknown,
+  ):
+    | UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>
+    | Promise<UnsafeDeserializedCodecResult<TOkDeserialize, TErrDeserialize>> {
+    return unwrapCodecDeserializationError(deserializeResult(value));
+  }
+
   return {
     serialize: serializeResult,
+    serializeUnsafe: serializeUnsafeResult,
     deserialize: deserializeResult,
+    deserializeUnsafe: deserializeUnsafeResult,
   } satisfies ResultCodec<TOkSerialize, TErrSerialize, TOkDeserialize, TErrDeserialize>;
 };
 

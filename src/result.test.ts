@@ -2380,6 +2380,45 @@ describe("Result", () => {
       });
     });
 
+    it("serializeUnsafe returns the serialized envelope directly", () => {
+      const serialized = UserResultCodec.serializeUnsafe(
+        Result.ok({ id: "1", name: "Ada", createdAt: new Date("2026-05-28T12:00:00.000Z") }),
+      );
+
+      expectTypeOf(serialized).toEqualTypeOf<SerializedResult<UserWire, AppErrorWire>>();
+      expect(serialized).toEqual({
+        status: "ok",
+        value: {
+          id: "1",
+          display_name: "Ada",
+          created_at_iso: "2026-05-28T12:00:00.000Z",
+        },
+      });
+    });
+
+    it("serializeUnsafe panics with ResultSerializationError as its cause", () => {
+      const RejectingOkCodec = Result.codec({
+        serialize: {
+          ok: makeSchema<unknown, UserWire>("reject-ok-to-wire", () => ({
+            issues: [{ message: "Expected serializable user", path: ["createdAt"] }],
+          })),
+          err: errorToWire,
+        },
+        deserialize: { ok: wireToUser, err: wireToError },
+      });
+
+      try {
+        RejectingOkCodec.serializeUnsafe(Result.ok({ createdAt: "nope" }));
+        expect.unreachable("serializeUnsafe should panic when serialization reports issues");
+      } catch (error) {
+        expect(Panic.is(error)).toBe(true);
+        if (Panic.is(error)) {
+          expect(error.message).toBe("Result.codec serializeUnsafe failed");
+          expect(ResultSerializationError.is(error.cause)).toBe(true);
+        }
+      }
+    });
+
     it("returns ResultSerializationError with ok payload issues", () => {
       const RejectingOkCodec = Result.codec({
         serialize: {
@@ -2454,6 +2493,60 @@ describe("Result", () => {
       expect(result).toBeInstanceOf(Err);
       if (Result.isError(result)) {
         expect(result.error).toEqual({ code: "BAD_INPUT", message: "bad email", retryable: false });
+      }
+    });
+
+    it("deserializeUnsafe returns a decoded Ok without a deserialization error type", () => {
+      const result = UserResultCodec.deserializeUnsafe({
+        status: "ok",
+        value: {
+          id: "1",
+          display_name: "Ada",
+          created_at_iso: "2026-05-28T12:00:00.000Z",
+        },
+      });
+
+      expectTypeOf(result).toEqualTypeOf<Result<User, AppError>>();
+      expect(result).toEqual(
+        Result.ok({
+          id: "1",
+          name: "Ada",
+          createdAt: new Date("2026-05-28T12:00:00.000Z"),
+        }),
+      );
+    });
+
+    it("deserializeUnsafe preserves a valid decoded Err value", () => {
+      const result = UserResultCodec.deserializeUnsafe({
+        status: "error",
+        error: {
+          type: "BAD_INPUT",
+          message: "bad email",
+          retryable: false,
+        },
+      });
+
+      expectTypeOf(result).toEqualTypeOf<Result<User, AppError>>();
+      expect(Result.isError(result)).toBe(true);
+      if (Result.isError(result)) {
+        expect(result.error).toEqual({
+          code: "BAD_INPUT",
+          message: "bad email",
+          retryable: false,
+        });
+      }
+    });
+
+    it("deserializeUnsafe panics with ResultDeserializationError for malformed input", () => {
+      try {
+        UserResultCodec.deserializeUnsafe({ foo: "bar" });
+        expect.unreachable("deserializeUnsafe should panic for malformed input");
+      } catch (error) {
+        expect(Panic.is(error)).toBe(true);
+        if (Panic.is(error)) {
+          expect(error.message).toBe("Result.codec deserializeUnsafe failed");
+          expect(ResultDeserializationError.is(error.cause)).toBe(true);
+        }
       }
     });
 
@@ -2609,6 +2702,17 @@ describe("Result", () => {
           created_at_iso: "2026-05-28T12:00:00.000Z",
         },
       });
+      const serializedUnsafe = AsyncUserResultCodec.serializeUnsafe(
+        Result.ok({ id: "1", name: "Ada", createdAt: new Date("2026-05-28T12:00:00.000Z") }),
+      );
+      const deserializedUnsafe = AsyncUserResultCodec.deserializeUnsafe({
+        status: "ok",
+        value: {
+          id: "1",
+          display_name: "Ada",
+          created_at_iso: "2026-05-28T12:00:00.000Z",
+        },
+      });
 
       expectTypeOf(serialized).toEqualTypeOf<
         Promise<Result<SerializedResult<UserWire, AppErrorWire>, ResultSerializationError>>
@@ -2616,6 +2720,10 @@ describe("Result", () => {
       expectTypeOf(deserialized).toEqualTypeOf<
         Promise<Result<User, AppError | ResultDeserializationError>>
       >();
+      expectTypeOf(serializedUnsafe).toEqualTypeOf<
+        Promise<SerializedResult<UserWire, AppErrorWire>>
+      >();
+      expectTypeOf(deserializedUnsafe).toEqualTypeOf<Promise<Result<User, AppError>>>();
       await expect(serialized).resolves.toBeInstanceOf(Ok);
       await expect(serialized).resolves.toEqual(
         Result.ok({
@@ -2628,6 +2736,55 @@ describe("Result", () => {
         }),
       );
       await expect(deserialized).resolves.toBeInstanceOf(Ok);
+      await expect(serializedUnsafe).resolves.toEqual({
+        status: "ok",
+        value: {
+          id: "1",
+          display_name: "Ada",
+          created_at_iso: "2026-05-28T12:00:00.000Z",
+        },
+      });
+      await expect(deserializedUnsafe).resolves.toEqual(
+        Result.ok({
+          id: "1",
+          name: "Ada",
+          createdAt: new Date("2026-05-28T12:00:00.000Z"),
+        }),
+      );
+    });
+
+    it("unsafe codec methods reject with Panic when async schemas report issues", async () => {
+      const RejectingAsyncCodec = Result.codec({
+        serialize: {
+          ok: makeAsyncSchema<string, string>("rejecting-ok-serializer", async () => ({
+            issues: [{ message: "Cannot serialize value" }],
+          })),
+          err: identitySchema<never>("identity-error-serializer"),
+        },
+        deserialize: {
+          ok: makeAsyncSchema<unknown, string>("rejecting-ok-deserializer", async () => ({
+            issues: [{ message: "Cannot deserialize value" }],
+          })),
+          err: identitySchema<never>("identity-error-deserializer"),
+        },
+      });
+
+      const serialized = RejectingAsyncCodec.serializeUnsafe(Result.ok("value"));
+      const deserialized = RejectingAsyncCodec.deserializeUnsafe({
+        status: "ok",
+        value: "value",
+      });
+
+      await expect(serialized).rejects.toMatchObject({
+        _tag: "Panic",
+        message: "Result.codec serializeUnsafe failed",
+        cause: { _tag: "ResultSerializationError" },
+      });
+      await expect(deserialized).rejects.toMatchObject({
+        _tag: "Panic",
+        message: "Result.codec deserializeUnsafe failed",
+        cause: { _tag: "ResultDeserializationError" },
+      });
     });
 
     it("infers serialization and deserialization async behavior independently", async () => {
@@ -2716,6 +2873,8 @@ describe("Result", () => {
       const deserializedOk = MixedBranchCodec.deserialize({ status: "ok", value: "value" });
       const deserializedErr = MixedBranchCodec.deserialize({ status: "error", error: 42 });
       const deserializedUnknownEnvelope = MixedBranchCodec.deserialize(unknownEnvelope);
+      const serializedUnsafeUnknownBranch = MixedBranchCodec.serializeUnsafe(getResult());
+      const deserializedUnsafeUnknownEnvelope = MixedBranchCodec.deserializeUnsafe(unknownEnvelope);
 
       type Serialized = Result<SerializedResult<string, number>, ResultSerializationError>;
       type Deserialized = Result<string, number | ResultDeserializationError>;
@@ -2727,11 +2886,26 @@ describe("Result", () => {
       expectTypeOf(deserializedUnknownEnvelope).toEqualTypeOf<
         Deserialized | Promise<Deserialized>
       >();
+      expectTypeOf(serializedUnsafeUnknownBranch).toEqualTypeOf<
+        SerializedResult<string, number> | Promise<SerializedResult<string, number>>
+      >();
+      expectTypeOf(deserializedUnsafeUnknownEnvelope).toEqualTypeOf<
+        Result<string, number> | Promise<Result<string, number>>
+      >();
       expect(serializedOk).toEqual(Result.ok({ status: "ok", value: "value" }));
       await expect(serializedErr).resolves.toEqual(Result.ok({ status: "error", error: 42 }));
       expect(deserializedOk).toEqual(Result.ok("value"));
       const resolvedDeserializedErr = await deserializedErr;
       const resolvedUnknownEnvelope = await deserializedUnknownEnvelope;
+      expect(await serializedUnsafeUnknownBranch).toEqual({
+        status: "ok",
+        value: "value",
+      });
+      const resolvedDeserializedUnsafe = await deserializedUnsafeUnknownEnvelope;
+      expect(Result.isError(resolvedDeserializedUnsafe)).toBe(true);
+      if (Result.isError(resolvedDeserializedUnsafe)) {
+        expect(resolvedDeserializedUnsafe.error).toBe(42);
+      }
       expect(Result.isError(resolvedDeserializedErr)).toBe(true);
       expect(Result.isError(resolvedUnknownEnvelope)).toBe(true);
       if (Result.isError(resolvedDeserializedErr)) {
@@ -2824,11 +2998,24 @@ describe("Result", () => {
         status: "error",
         error: { type: "NOT_FOUND", message: "missing", retryable: false },
       });
+      const outboundUnsafe = UserResultCodec.serializeUnsafe(
+        Result.ok({ id: "1", name: "Ada", createdAt: new Date("2026-05-28T12:00:00.000Z") }),
+      );
+      const inboundUnsafe = UserResultCodec.deserializeUnsafe({
+        status: "ok",
+        value: {
+          id: "1",
+          display_name: "Ada",
+          created_at_iso: "2026-05-28T12:00:00.000Z",
+        },
+      });
 
       expectTypeOf(outbound).toEqualTypeOf<
         Result<SerializedResult<UserWire, AppErrorWire>, ResultSerializationError>
       >();
       expectTypeOf(inbound).toEqualTypeOf<Result<User, AppError | ResultDeserializationError>>();
+      expectTypeOf(outboundUnsafe).toEqualTypeOf<SerializedResult<UserWire, AppErrorWire>>();
+      expectTypeOf(inboundUnsafe).toEqualTypeOf<Result<User, AppError>>();
 
       const serializeInvalidUser = (): void => {
         // @ts-expect-error -- The Ok serializer requires the complete User input type.

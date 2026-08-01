@@ -55,7 +55,7 @@ Returned by `Result.try` and `Result.tryPromise` when no custom catch translator
 
 ### `ResultSerializationError`
 
-Returned when a selected serialization schema reports validation issues.
+Returned when a selected serialization schema reports validation issues. `serializeUnsafe` throws `Panic` with this error as its cause instead of returning it.
 
 | Property | Type                                     |
 | -------- | ---------------------------------------- |
@@ -65,7 +65,7 @@ Returned when a selected serialization schema reports validation issues.
 
 ### `ResultDeserializationError`
 
-Returned for an invalid serialized envelope or when a selected payload schema reports issues.
+Returned for an invalid serialized envelope or when a selected payload schema reports issues. `deserializeUnsafe` throws `Panic` with this error as its cause while preserving valid decoded domain Err values.
 
 | Property | Type                                                                     |
 | -------- | ------------------------------------------------------------------------ |

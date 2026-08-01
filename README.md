@@ -542,6 +542,18 @@ if (Result.isError(decoded) && ResultDeserializationError.is(decoded.error)) {
 }
 ```
 
+When you own both producer and consumer and version their schemas together, the unsafe variants are often the simpler choice. In that setting, a codec validation error usually means the shared contract is broken rather than an expected failure. The unsafe methods remove the codec-error handling layer and its associated unwrapping or translation boilerplate:
+
+```ts
+const envelope = await UserResultCodec.serializeUnsafe(Result.ok(user));
+// SerializedResult<UserWire, ErrorWire>
+
+const decoded = await UserResultCodec.deserializeUnsafe(inputFromNetwork);
+// Result<User, DomainError>
+```
+
+`serializeUnsafe` panics when serialization returns `ResultSerializationError`. `deserializeUnsafe` panics only when validation returns `ResultDeserializationError`; a valid serialized Err remains a decoded domain Err. Both methods preserve the selected schema's synchronous or asynchronous behavior. Prefer the safe methods for public, independently versioned, persisted, or otherwise untrusted boundaries where contract mismatch is an expected condition.
+
 The codec validates the outer `{ status, value | error }` envelope and the selected payload. In-memory and wire types can differ in both directions. A schema issue returns `ResultSerializationError` or `ResultDeserializationError`; a schema that throws or rejects is a defect and produces `Panic`.
 
 See [Result codecs](https://better-result.dev/serialization/result-codecs) for mixed synchronous/asynchronous schemas and exact return-type inference.
@@ -591,7 +603,7 @@ The [complete API reference](https://better-result.dev/reference/result) is the 
 | Observe                | `tap`, `tapAsync`, `tapError`, `tapErrorAsync`, `tapBoth`, `tapBothAsync`                                   |
 | Collect                | `Result.all`, `Result.allAsync`, `Result.partition`, `Result.partitionAsync`, `Result.flatten`              |
 | Typed errors           | `TaggedError`, `matchError`, `matchErrorPartial`, `isTaggedError`                                           |
-| Boundaries and defects | `Result.codec`, `Panic`, `panic`, `isPanic`, `UnhandledException`                                           |
+| Boundaries and defects | `Result.codec`, `serializeUnsafe`, `deserializeUnsafe`, `Panic`, `panic`, `isPanic`, `UnhandledException`   |
 
 ### Public types
 

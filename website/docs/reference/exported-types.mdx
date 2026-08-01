@@ -54,11 +54,11 @@ These describe wire envelopes, not proof of validation. Use `Result.codec` at un
 
 ## Codec types
 
-| Type                     | Meaning                                            |
-| ------------------------ | -------------------------------------------------- |
-| `ResultCodecConfig<...>` | four schemas for serialize/deserialize × ok/err    |
-| `ResultCodec<...>`       | resulting `serialize` and `deserialize` operations |
-| `ResultCodecIssue`       | Standard Schema validation issue alias             |
+| Type                     | Meaning                                         |
+| ------------------------ | ----------------------------------------------- |
+| `ResultCodecConfig<...>` | four schemas for serialize/deserialize × ok/err |
+| `ResultCodec<...>`       | safe and unsafe codec operations                |
+| `ResultCodecIssue`       | Standard Schema validation issue alias          |
 
 ## Standard Schema types
 

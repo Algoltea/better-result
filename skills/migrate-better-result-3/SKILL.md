@@ -53,9 +53,9 @@ It preserves constructors, properties, formatting, and call sites. Manually upda
 
 If the inventory contains `Result.serialize`, `Result.deserialize`, or `Result.hydrate`, follow [references/result-codec-migration.md](references/result-codec-migration.md). The owning codec validates one application contract: a method's actual Ok and Err payloads in both directions. Share schema fragments, factories, and error-policy helpers across codecs; keep distinct success contracts in distinct named codecs.
 
-Account for changed control flow: serialization can now return `ResultSerializationError`; deserialization adds `ResultDeserializationError`; sync/async schemas determine whether codec operations return a `Result` or `Promise<Result>`.
+Account for changed control flow: serialization can now return `ResultSerializationError`; deserialization adds `ResultDeserializationError`; sync/async schemas determine whether codec operations return a `Result` or `Promise<Result>`. When the repository owns both producer and consumer, versions their schemas together, and treats contract mismatch as a defect, prefer `serializeUnsafe` and `deserializeUnsafe` to remove codec-error handling boilerplate. `serializeUnsafe` removes `ResultSerializationError` by panicking; `deserializeUnsafe` removes only `ResultDeserializationError` while preserving valid decoded domain Err values. Keep safe methods at public, independently versioned, persisted, or otherwise untrusted boundaries.
 
-**Complete when:** every removed-helper call has a method- or boundary-specific codec with four payload schemas, every wire Err is reconstructed as the intended domain error, and every codec error and async return is handled at its boundary.
+**Complete when:** every removed-helper call has a method- or boundary-specific codec with four payload schemas, every wire Err is reconstructed as the intended domain error, and every codec error or intentional unsafe Panic policy and async return is handled at its boundary.
 
 ## 4. Reconcile changed inference and optional APIs
 
