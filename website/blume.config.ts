@@ -1,5 +1,7 @@
 import { defineConfig } from "blume";
 
+import { addAgentDocsAlternateLink } from "./integrations/agent-docs-alternate-link";
+
 export default defineConfig({
   title: "better-result",
   description:
@@ -46,6 +48,7 @@ export default defineConfig({
   search: {
     provider: "orama",
   },
+  integrations: [addAgentDocsAlternateLink()],
   markdown: {
     imageZoom: true,
     code: {

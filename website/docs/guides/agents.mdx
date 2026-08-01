@@ -1,6 +1,6 @@
 ---
 title: Documentation for agents
-description: Give coding agents precise better-result context through Markdown exports, llms.txt, and portable repository skills.
+description: Give coding agents precise better-result context through agents.txt, llms.txt, Markdown exports, and portable repository skills.
 ---
 
 This site is built for browser readers and plain-text-searching coding agents from the same source.
@@ -9,11 +9,14 @@ This site is built for browser readers and plain-text-searching coding agents fr
 
 | Route                     | Use                              |
 | ------------------------- | -------------------------------- |
-| `/llms.txt`               | Compact documentation index      |
+| `/agents.txt`             | Compact documentation index      |
+| `/llms.txt`               | Alias-compatible compact index   |
 | `/llms-full.txt`          | Full documentation corpus        |
 | `/<page>.md`              | Clean Markdown for one page      |
 | `/<page>.mdx`             | Original MDX source for one page |
 | `/agent-readability.json` | Generated readability metadata   |
+
+Codex probes `/agents.txt` directly, while clients that follow the `llms.txt` convention can use `/llms.txt`. Every HTML page also advertises the compact index with a `rel="alternate"` plain-text link.
 
 Point an agent at the smallest source that answers its question. A focused page costs less context than the full corpus.
 

@@ -19,7 +19,7 @@ bun run check
 bun run build
 ```
 
-The static site is written to `website/dist/`. Blume also generates page-level Markdown, `llms.txt`, and `llms-full.txt` for coding agents.
+The static site is written to `website/dist/`. Blume also generates page-level Markdown, `llms.txt`, and `llms-full.txt` for coding agents. Cloudflare serves `/agents.txt` as an alias of the compact `/llms.txt` index, and each HTML page advertises that index with a plain-text `rel="alternate"` link.
 
 ## Deploy
 

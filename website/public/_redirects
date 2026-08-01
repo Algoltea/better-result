@@ -1,3 +1,6 @@
+# Serve the generated compact agent index at the agents.txt convention too.
+/agents.txt /llms.txt 200
+
 # Preserve the legacy MitlaFly introduction URL indexed by search engines.
 /introduction / 301
 /introduction/ / 301
