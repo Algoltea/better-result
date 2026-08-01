@@ -1,8 +1,17 @@
-# better-result
+<p align="center">
+  <img src="https://better-result.dev/logo.svg" alt="better-result logo" width="112" height="112" />
+</p>
 
-Lightweight Result type for TypeScript with generator-based composition.
+<h1 align="center">better-result</h1>
 
-[Documentation](https://better-result.dev) · [Quickstart](https://better-result.dev/getting-started/quickstart) · [API reference](https://better-result.dev/reference/result) · [Migrate from 2.x](https://better-result.dev/migration/from-2)
+<p align="center">Lightweight Result type for TypeScript with generator-based composition.</p>
+
+<p align="center">
+  <a href="https://better-result.dev">Documentation</a> ·
+  <a href="https://better-result.dev/getting-started/quickstart">Quickstart</a> ·
+  <a href="https://better-result.dev/reference/result">API reference</a> ·
+  <a href="https://better-result.dev/migration/from-2">Migrate from 2.x</a>
+</p>
 
 - **Make failures explicit:** TypeScript shows what a function returns when it succeeds and what can go wrong.
 - **Write multi-step workflows in order:** `yield*` passes successful values to the next step and stops on the first failure.
@@ -44,7 +53,7 @@ pnpm add better-result
 # or: bun add better-result
 ```
 
-better-result is ESM-only and has zero runtime dependencies.
+better-result requires TypeScript 5.4 or newer, is ESM-only, and has zero runtime dependencies.
 
 ## Contents
 

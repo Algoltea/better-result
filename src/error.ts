@@ -121,6 +121,7 @@ export const TaggedError = <Tag extends string>(tag: Tag): TaggedErrorClass<Tag>
   // SAFETY: Cast needed for factory pattern - Props are assigned via Object.assign
   return Base as unknown as TaggedErrorClass<Tag>;
 };
+/** Type guard for any tagged error created by the TaggedError factory. */
 TaggedError.is = isAnyTaggedError;
 
 interface TaggedErrorMethods extends Error {
@@ -413,6 +414,7 @@ export class ResultDeserializationError extends TaggedError("ResultDeserializati
   value: unknown;
   issues?: ReadonlyArray<ResultCodecIssue>;
 }> {
+  /** Creates a deserialization error for a rejected value and optional validation issues. */
   constructor(args: { value: unknown; issues?: ReadonlyArray<ResultCodecIssue> }) {
     super({
       message: args.issues
@@ -438,6 +440,7 @@ export class ResultSerializationError extends TaggedError("ResultSerializationEr
   value: unknown;
   issues?: ReadonlyArray<ResultCodecIssue>;
 }> {
+  /** Creates a serialization error for a rejected value and optional validation issues. */
   constructor(args: { value: unknown; issues?: ReadonlyArray<ResultCodecIssue> }) {
     super({
       message: "Failed to serialize Result payload",

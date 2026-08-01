@@ -50,6 +50,7 @@ const makeSchema = <Input, Output>(
   "~standard": {
     version: 1,
     vendor,
+    // SAFETY: Standard Schema uses this optional field only for compile-time input/output inference.
     types: undefined as unknown as {
       input: Input;
       output: Output;
@@ -65,6 +66,7 @@ const makeAsyncSchema = <Input, Output>(
   "~standard": {
     version: 1,
     vendor,
+    // SAFETY: Standard Schema uses this optional field only for compile-time input/output inference.
     types: undefined as unknown as {
       input: Input;
       output: Output;
@@ -74,6 +76,7 @@ const makeAsyncSchema = <Input, Output>(
 });
 
 const identitySchema = <T>(vendor: string): SyncSchema<T, T> => {
+  // SAFETY: This test schema intentionally defines every value in its declared input type as valid.
   return makeSchema<T, T>(vendor, (value) => ({ value: value as T }));
 };
 
@@ -775,6 +778,47 @@ describe("Result", () => {
         await expect(pending).resolves.toMatchObject({ status: "ok", value: "success" });
         expect(attempts).toBe(2);
         expect(delays).toEqual([75]);
+      });
+
+      it("keeps arbitrary jittered delays within the configured reduction bounds", async () => {
+        const delays = recordRetryDelays();
+        const random = vi.spyOn(Math, "random");
+
+        await fc.assert(
+          fc.asyncProperty(
+            fc.integer({ min: 0, max: 10_000 }),
+            fc.double({ min: 0, max: 1, noNaN: true }),
+            fc.double({ min: 0, max: 1, noNaN: true }),
+            async (baseDelayMs, jitterFactor, randomValue) => {
+              delays.length = 0;
+              random.mockReturnValue(randomValue);
+              let attempts = 0;
+
+              await Result.tryPromise(
+                () => {
+                  attempts++;
+                  return attempts === 1
+                    ? Promise.reject(new Error("fail"))
+                    : Promise.resolve("success");
+                },
+                {
+                  retry: {
+                    times: 1,
+                    delayMs: baseDelayMs,
+                    backoff: "constant",
+                    jitter: jitterFactor,
+                  },
+                },
+              );
+
+              const expectedDelay = baseDelayMs * (1 - jitterFactor + randomValue * jitterFactor);
+              expect(delays).toHaveLength(1);
+              expect(delays[0]).toBeCloseTo(expectedDelay, 8);
+              expect(delays[0]).toBeGreaterThanOrEqual(baseDelayMs * (1 - jitterFactor));
+              expect(delays[0]).toBeLessThanOrEqual(baseDelayMs);
+            },
+          ),
+        );
       });
 
       it.each([
@@ -2193,6 +2237,7 @@ describe("Result", () => {
       } catch (e) {
         expect(e).toBeInstanceOf(Panic);
         if (e instanceof Panic) {
+          // SAFETY: Panic.toJSON returns an object whose named fields this test inspects.
           const json = e.toJSON() as Record<string, unknown>;
           expect(json._tag).toBe("Panic");
           expect(json.name).toBe("Panic");
@@ -2226,6 +2271,7 @@ describe("Result", () => {
       const p = new Panic({ message: "test panic", cause: "string cause" });
       expect(p.message).toBe("test panic");
 
+      // SAFETY: Panic.toJSON returns an object whose cause field this test inspects.
       const json = p.toJSON() as Record<string, unknown>;
       expect(json.cause).toBe("string cause");
     });
@@ -2257,6 +2303,7 @@ describe("Result", () => {
     };
 
     const userToWire = makeSchema<User, UserWire>("user-to-wire", (value) => {
+      // SAFETY: Result.codec constrains this schema's input to User before validation runs.
       const user = value as User;
       return {
         value: {
@@ -2268,6 +2315,7 @@ describe("Result", () => {
     });
 
     const errorToWire = makeSchema<AppError, AppErrorWire>("error-to-wire", (value) => {
+      // SAFETY: Result.codec constrains this schema's input to AppError before validation runs.
       const error = value as AppError;
       return {
         value: {
@@ -2283,6 +2331,7 @@ describe("Result", () => {
         return { issues: [{ message: "Expected object" }] };
       }
 
+      // SAFETY: The null/object check above establishes a property-readable unknown record.
       const input = value as Record<string, unknown>;
       if (
         typeof input.id !== "string" ||
@@ -2321,6 +2370,7 @@ describe("Result", () => {
         return { issues: [{ message: "Expected object" }] };
       }
 
+      // SAFETY: The null/object check above establishes a property-readable unknown record.
       const input = value as Record<string, unknown>;
       const code = input.type;
       const validCode = code === "NOT_FOUND" || code === "BAD_INPUT";
@@ -2672,6 +2722,7 @@ describe("Result", () => {
       const AsyncUserResultCodec = Result.codec({
         serialize: {
           ok: makeAsyncSchema<User, UserWire>("async-user-to-wire", async (value) => {
+            // SAFETY: Result.codec constrains this schema's input to User before validation runs.
             const user = value as User;
             return {
               value: {
@@ -3898,6 +3949,31 @@ describe("Type Inference", () => {
       expectTypeOf(result).toEqualTypeOf<Result<[number, string], never>>();
       expect(result).toEqual(Result.ok([1, "hello"]));
     });
+
+    it("preserves arbitrary success order or returns the first input error", () => {
+      const resultArbitrary = fc.oneof(
+        fc.integer().map((value) => Result.ok<number, string>(value)),
+        fc.string().map((error) => Result.err<number, string>(error)),
+      );
+
+      fc.assert(
+        fc.property(fc.array(resultArbitrary), (results) => {
+          const collected = Result.all(results);
+          const firstError = results.find((result) => result.status === "error");
+
+          if (firstError?.status === "error") {
+            expect(collected.status).toBe("error");
+            if (collected.status === "error") {
+              expect(collected.error).toBe(firstError.error);
+            }
+            return;
+          }
+
+          const expectedValues = results.map((result) => result.unwrap());
+          expect(collected).toEqual(Result.ok(expectedValues));
+        }),
+      );
+    });
   });
 
   describe("allAsync", () => {
@@ -3981,6 +4057,26 @@ describe("Type Inference", () => {
         [1, 2],
         ["a", "b"],
       ]);
+    });
+
+    it("partitions arbitrary inputs without changing branch order", () => {
+      const resultArbitrary = fc.oneof(
+        fc.integer().map((value) => Result.ok<number, string>(value)),
+        fc.string().map((error) => Result.err<number, string>(error)),
+      );
+
+      fc.assert(
+        fc.property(fc.array(resultArbitrary), (results) => {
+          const expectedValues = results.flatMap((result) =>
+            result.status === "ok" ? [result.value] : [],
+          );
+          const expectedErrors = results.flatMap((result) =>
+            result.status === "error" ? [result.error] : [],
+          );
+
+          expect(Result.partition(results)).toEqual([expectedValues, expectedErrors]);
+        }),
+      );
     });
 
     it("infers heterogeneous success and error unions", () => {

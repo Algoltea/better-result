@@ -79,6 +79,9 @@ jobs:
       - name: Build package
         run: bun run build
 
+      - name: Check minimum TypeScript version
+        run: bun run check:typescript-minimum
+
       - name: Pack release artifact
         run: npm pack
 

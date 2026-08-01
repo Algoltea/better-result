@@ -115,6 +115,7 @@ const result = await Result.gen(async function* () {
 ```bash
 bun run build     # tsdown compilation
 bun run check     # Type-check only (--noEmit)
+bun run check:typescript-minimum # Verify public declarations with TypeScript 5.4
 bun run test      # Run Vitest runtime and type tests
 bun run test:watch # Run Vitest in watch mode
 bun run lint      # oxlint

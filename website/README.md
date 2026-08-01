@@ -31,6 +31,16 @@ bun run deploy
 
 Wrangler must be authenticated to the `dmmulroy` Cloudflare account. Deployment configuration lives in `wrangler.jsonc`.
 
+## Brand assets
+
+The site serves the better-result mark in formats for documentation, social cards, browsers, and installed web apps:
+
+- `public/logo.svg` and `public/logo.png` are the primary scalable and raster marks.
+- `public/icon.svg`, `public/icon.png`, and `public/favicon.ico` provide browser icons.
+- `public/apple-touch-icon.png` provides the iOS home-screen icon.
+
+Keep generated raster assets visually identical to `public/logo.svg`, which is the canonical artwork.
+
 ## Content conventions
 
 - Document the API shipped by the repository branch, not unreleased ideas.

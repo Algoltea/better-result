@@ -4,6 +4,7 @@ import {
   TaggedError,
   UnhandledException,
   ResultDeserializationError,
+  ResultSerializationError,
   matchError,
   matchErrorPartial,
   isTaggedError,
@@ -89,6 +90,18 @@ describe("TaggedError", () => {
       const lines = outer.stack?.split("\n") ?? [];
       const causedByLines = lines.filter((l) => l.includes("Caused by:"));
       expect(causedByLines.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it.each([
+      (value: unknown) => new ResultSerializationError({ value }),
+      (value: unknown) => new ResultDeserializationError({ value }),
+    ])("keeps codec error values enumerable and serializable", (makeError) => {
+      const value = { field: "invalid" };
+      const error = makeError(value);
+
+      expect(Object.keys(error)).toContain("value");
+      expect(error.toJSON()).toHaveProperty("value", value);
+      expect(JSON.parse(JSON.stringify(error))).toHaveProperty("value", value);
     });
   });
 

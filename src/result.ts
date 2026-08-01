@@ -696,19 +696,28 @@ export interface ResultCodec<
   TOkDeserialize extends StandardSchemaV1,
   TErrDeserialize extends StandardSchemaV1,
 > {
-  /** Serializes the selected Result branch, preserving that branch schema's sync or async return. */
+  /**
+   * Serializes the selected Result branch, preserving that branch schema's sync or async return.
+   * @throws {Panic} If the selected Standard Schema validator throws or rejects.
+   */
   readonly serialize: <
     TResult extends Result<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>,
   >(
     result: TResult,
   ) => SerializedCodecOperationResult<TResult, TOkSerialize, TErrSerialize>;
-  /** Serializes and unwraps the envelope, throwing Panic instead of returning a serialization error. */
+  /**
+   * Serializes and unwraps the envelope, throwing Panic instead of returning a serialization error.
+   * @throws {Panic} If validation reports issues or the selected schema throws or rejects.
+   */
   readonly serializeUnsafe: <
     TResult extends Result<StandardSchemaInput<TOkSerialize>, StandardSchemaInput<TErrSerialize>>,
   >(
     result: TResult,
   ) => SerializedCodecUnsafeOperationResult<TResult, TOkSerialize, TErrSerialize>;
-  /** Deserializes a known branch precisely, including status-only envelopes produced when JSON omits undefined payloads. */
+  /**
+   * Deserializes a known branch precisely, including envelopes whose undefined payload JSON omitted.
+   * @throws {Panic} If the selected Standard Schema validator throws or rejects.
+   */
   readonly deserialize: {
     (
       value: SerializedOkEnvelope,
@@ -724,7 +733,10 @@ export interface ResultCodec<
     >;
     (value: unknown): UnknownDeserializationResult<TOkDeserialize, TErrDeserialize>;
   };
-  /** Deserializes a Result while throwing Panic instead of returning a deserialization error. */
+  /**
+   * Deserializes a Result while throwing Panic instead of returning a deserialization error.
+   * @throws {Panic} If validation reports issues or the selected schema throws or rejects.
+   */
   readonly deserializeUnsafe: {
     (
       value: SerializedOkEnvelope,
