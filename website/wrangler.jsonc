@@ -5,10 +5,8 @@
   "workers_dev": true,
   "preview_urls": true,
   "routes": [
-    {
-      "pattern": "better-result.dev/*",
-      "zone_name": "better-result.dev",
-    },
+    { "pattern": "better-result.dev", "custom_domain": true },
+    { "pattern": "www.better-result.dev", "custom_domain": true },
   ],
   "observability": {
     "enabled": true,
